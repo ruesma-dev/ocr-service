@@ -10,7 +10,7 @@ from domain.models.residuos_models import ResiduosDocumento
 
 class ResiduosPaquete(BaseModel):
     """
-    Permite devolver múltiples certificados detectados dentro de un mismo PDF.
+    Devuelve múltiples certificados detectados dentro de un mismo PDF.
     """
     model_config = ConfigDict(extra="ignore")
 
