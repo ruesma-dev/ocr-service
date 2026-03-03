@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from domain.models.ocr_models import DocumentoOcr
 from domain.models.residuos_models import ResiduosDocumento
 from domain.models.residuos_paquete import ResiduosPaquete
+from domain.models.bc3_classification_models import Bc3ClasificacionResultado
 
 
 class SchemaRegistry:
@@ -16,6 +17,7 @@ class SchemaRegistry:
             "documento_ocr": DocumentoOcr,
             "residuos_documento": ResiduosDocumento,
             "residuos_paquete": ResiduosPaquete,
+            "bc3_clasificacion_resultado": Bc3ClasificacionResultado,
         }
 
     def get(self, schema_name: str) -> Type[BaseModel]:

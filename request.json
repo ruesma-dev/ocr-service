@@ -1,0 +1,20 @@
+{
+  "prompt_key": "bc3_clasificador_es",
+  "bc3_id": "obra-001",
+  "top_k_candidates": 20,
+  "descompuestos": [
+    {
+      "id": "D1",
+      "codigo_bc3": "03.01.001",
+      "descripcion": "Suministro y colocación de tubería PVC Ø110",
+      "unidad": "m",
+      "capitulo": "SANEAMIENTO",
+      "subcapitulo": "RED HORIZONTAL",
+      "partida": "Tuberías y accesorios"
+    }
+  ],
+  "catalogo": [
+    { "codigo": "MAT-PVC-110", "nombre": "Tubería PVC Ø110", "descripcion": "Tubería PVC saneamiento", "tags": ["PVC","tubería","110"] },
+    { "codigo": "MO-OFI-ALB", "nombre": "Oficial 1ª albañil", "descripcion": "Mano de obra", "tags": ["mano de obra","albañil"] }
+  ]
+}

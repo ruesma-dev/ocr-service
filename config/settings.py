@@ -39,6 +39,15 @@ class Settings(BaseSettings):
         alias="SIM_SERVICE3_EXCEL_FILENAME",
     )
 
+    # -----------------------------
+    # NUEVO: BC3 (modo test/harness)
+    # -----------------------------
+    bc3_ingestor_json_path: str = Field("request.json", alias="BC3_INGESTOR_JSON_PATH")
+    bc3_catalog_path: str = Field("catalogo.csv", alias="BC3_CATALOG_PATH")
+    bc3_catalog_sheet: str | None = Field(default=None, alias="BC3_CATALOG_SHEET")
+    bc3_top_k_candidates: int = Field(25, alias="BC3_TOP_K_CANDIDATES")
+    bc3_output_path: str = Field("", alias="BC3_OUTPUT_PATH")
+
     class Config:
         env_file = ".env"
         extra = "ignore"

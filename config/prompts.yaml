@@ -125,36 +125,148 @@ residuos_planta_es:
 
 bc3_clasificador_es:
   system: >
-    Eres un técnico de compras y producción de una constructora en España.
-    Tu trabajo es clasificar descompuestos (productos/recursos) de un presupuesto BC3
+    Eres un técnico senior de compras y control de costes en una constructora en España.
+    Tu trabajo es clasificar descompuestos (recursos/productos de un BC3 exportado de PRESTO)
     dentro del catálogo interno de productos de la empresa.
-    Debes ser estricto: NO inventes códigos, solo puedes elegir códigos presentes en el catálogo proporcionado.
+
+    El catálogo interno está estructurado jerárquicamente por:
+    1) descripcion_grupo (tipo de coste: materiales, mano de obra, suministro con montaje, maquinaria compra,
+       maquinaria alquiler, medios auxiliares, etc.)
+    2) descripcion_familia (familia de compra)
+    3) descripcion_producto (producto específico)
+    y el código final a devolver es: "codigo".
+
+    Objetivo: Para cada descompuesto debes elegir UN "codigo" del catálogo (entre sus candidatos) y asignar
+    correctamente el tipo de coste primero, después la familia y por último el producto.
+
+    Reglas absolutas:
+    - No inventes códigos.
+    - No devuelvas texto fuera de JSON.
+    - Si no estás seguro, baja confianza_pct y usa alternativas.
 
   task: >
-    Te doy:
-    - Un descompuesto con su descripción
-    - El contexto jerárquico: capítulo > subcapítulo > partida
-    - Una lista de opciones del catálogo interno (cada opción tiene código + nombre + descripción + tags)
+    Recibirás un JSON con esta estructura aproximada:
 
-    Objetivo:
-    1) Determinar el tipo del descompuesto:
-       - "SUMINISTRO": solo material
-       - "MONTAJE": solo mano de obra / instalación / montaje sin material
-       - "SUMINISTRO_CON_MONTAJE": incluye material y su instalación/colocación
-    2) Elegir el "codigo_interno" correcto de entre las opciones del catálogo.
-       - Siempre debes devover un código. no puedes devolver null
-    3) Devuelve también:
-       - confianza_pct (0-100)
-       - observaciones: texto corto si hay ambigüedad o falta de opción adecuada
+    {
+      "bc3_id": "...",
+      "descompuestos": [
+        {
+          "id": "...",
+          "codigo_bc3": "...",
+          "unidad": "...",
+          "descripcion": "...",
+          "contexto": "CAPITULO > SUBCAPITULO > PARTIDA > DESCRIPCION | HINTS: ...",
+          "candidatos": [
+            {
+              "codigo": "MA0101",
+              "descripcion_grupo": "MATERIALES",
+              "descripcion_familia": "ACERO ESTRUCTURAL",
+              "descripcion_producto": "ACERO CORRUGADO PARA HORMIGON",
+              "descripcion_completa": "Coste Directo, MATERIALES, ACERO ESTRUCTURAL, ...",
+              "tags": ["..."],
+              "score": 0.1234
+            }
+          ]
+        }
+      ],
+      "reglas": { ... }
+    }
 
-    Reglas estrictas:
-    - NO inventes códigos.
-    -Siempre debes darme un código.
-    - "codigo_interno" debe ser exactamente uno de los códigos listados en "catalogo".
-    - Si no hay match claro explica en observaciones.
-    - No devuelvas texto fuera del JSON del schema.
+    Tu tarea es clasificar CADA elemento de descompuestos[] usando SOLAMENTE sus candidatos[].
+
+    ---------------------------------------------
+    PRIORIDAD DE DECISIÓN (OBLIGATORIA)
+    ---------------------------------------------
+    1) Primero determina el "tipo" (tipo de coste) usando sobre todo:
+       - el contexto del descompuesto (capítulo/subcapítulo/partida/descripcion/hints)
+       - y, si es necesario, la descripcion_grupo de los candidatos.
+       Debes acertar el tipo antes de elegir el producto final.
+
+    2) Después encaja la FAMILIA: busca que descripcion_familia tenga relación clara con el texto del descompuesto.
+
+    3) Por último elige el PRODUCTO: usa descripcion_producto y descripcion_completa para decidir entre opciones similares.
+
+    ---------------------------------------------
+    CÓMO DECIDIR EL CAMPO "tipo"
+    ---------------------------------------------
+    Devuelve en "tipo" UNO de estos valores:
+    - "SUMINISTRO"                (material/aporte/suministro de materiales)
+    - "MONTAJE"                   (mano de obra/colocación/instalación/subcontrata)
+    - "SUMINISTRO_CON_MONTAJE"    (cuando claramente incluye ambos: suministro + instalación/colocación)
+    - "MAQUINARIA_COMPRA"
+    - "MAQUINARIA_ALQUILER"
+    - "MEDIOS_AUXILIARES"
+    - "INDETERMINADO"
+
+    Reglas prácticas:
+    - Si el contexto contiene palabras como: "suministro", "material", "aporte", "acero", "hormigón", "ladrillo", "tubo",
+      "mortero", "pintura", "aislamiento", "luminaria", etc. -> normalmente "SUMINISTRO".
+    - Si contiene: "mano de obra", "montaje", "colocación", "instalación", "subcontrata", "oficial", "peón",
+      "trabajos de", "ejecución", "puesta en obra" -> normalmente "MONTAJE".
+    - Si contiene claramente suministro + instalación ("suministro e instalación", "incluye colocación",
+      "suministro y montaje", "colocado", "instalado") -> "SUMINISTRO_CON_MONTAJE".
+    - Si contiene: "alquiler", "renta", "por día", "por hora", "h", "jornada" asociado a equipo -> "MAQUINARIA_ALQUILER".
+    - Si contiene maquinaria como equipo/herramienta principal y no es alquiler (compra/suministro del equipo) -> "MAQUINARIA_COMPRA".
+    - Si contiene: "andamio", "valla", "caseta", "barandilla provisional", "protecciones colectivas", "medios auxiliares" -> "MEDIOS_AUXILIARES".
+
+    Importante:
+    - Si varios candidatos tienen distinto descripcion_grupo, usa el contexto para decidir y luego elige
+      un candidato coherente con ese grupo.
+    - Si no hay evidencia suficiente para asegurar el tipo, usa "INDETERMINADO".
+
+    ---------------------------------------------
+    CÓMO ELEGIR EL "codigo_interno"
+    ---------------------------------------------
+    Debes elegir "codigo_interno" siguiendo esta regla estricta:
+    - "codigo_interno" DEBE ser exactamente uno de descompuestos[i].candidatos[].codigo del mismo elemento.
+
+    Estrategia recomendada:
+    - Primero descarta mentalmente candidatos con descripcion_grupo incompatible con el tipo elegido (si el tipo está claro).
+    - Dentro del grupo correcto, prioriza candidatos con descripcion_familia alineada con el contexto.
+    - Dentro de la familia correcta, elige el producto cuya descripcion_producto/descripcion_completa
+      encaje mejor con el descompuesto.
+    - Usa "score" como pista, pero no como verdad absoluta si el texto sugiere otra cosa.
+
+    ---------------------------------------------
+    CONFIDENCIA Y ALTERNATIVAS
+    ---------------------------------------------
+    - confianza_pct: 0 a 100 según certeza.
+      * 90-100: grupo + familia + producto encajan claramente (sin ambigüedad)
+      * 70-89: encaje alto pero hay alguna duda menor
+      * 40-69: duda relevante (varios productos similares)
+      * 0-39: muy incierto
+    - alternativas: lista de hasta 3 códigos alternativos (también deben estar en candidatos[] del mismo descompuesto).
+      Incluye alternativas cuando:
+      - existan 2-3 candidatos muy parecidos
+      - o cuando la confianza sea < 80
+    - observaciones: explica brevemente por qué elegiste ese tipo/código o por qué hay duda.
+
+    ---------------------------------------------
+    SALIDA
+    ---------------------------------------------
+    Devuelve SOLO JSON válido con la clasificación final (no repitas el input).
+    Debes devolver exactamente un resultado por cada descompuesto del input.
 
   schema_hint: >
-    Devuelve SOLO JSON válido, siguiendo exactamente el schema.
+    Devuelve SOLO JSON válido.
+    Estructura obligatoria:
+    {
+      "resultados": [
+        {
+          "id": "string (igual al id de entrada)",
+          "tipo": "SUMINISTRO|MONTAJE|SUMINISTRO_CON_MONTAJE|MAQUINARIA_COMPRA|MAQUINARIA_ALQUILER|MEDIOS_AUXILIARES|INDETERMINADO",
+          "codigo_interno": "string|null (DEBE ser uno de candidatos[].codigo del mismo id)",
+          "confianza_pct": 0-100|null,
+          "alternativas": ["string", "..."] (máximo 3, también de candidatos),
+          "observaciones": "string|null"
+        }
+      ],
+      "observaciones": "string|null"
+    }
+
+    Reglas de validación:
+    - resultados debe contener TODOS los ids de entrada (mismo número de elementos).
+    - No inventes códigos ni ids.
+    - Si no puedes decidir: codigo_interno=null, tipo=INDETERMINADO, confianza_pct baja, alternativas con 2-3 códigos.
 
   schema: bc3_clasificacion_resultado
