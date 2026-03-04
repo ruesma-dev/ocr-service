@@ -1,20 +1,18 @@
 {
   "prompt_key": "bc3_clasificador_es",
-  "bc3_id": "obra-001",
-  "top_k_candidates": 20,
+  "bc3_id": "presupuesto_001",
+  "top_k_candidates": 25,
+  "catalog_xlsx_path": "C:\\Users\\pgris\\PycharmProjects\\ocr_service\\input\\productos_ia.xlsx",
+  "catalog_sheet": "Productos",
   "descompuestos": [
     {
-      "id": "D1",
-      "codigo_bc3": "03.01.001",
-      "descripcion": "Suministro y colocación de tubería PVC Ø110",
-      "unidad": "m",
-      "capitulo": "SANEAMIENTO",
-      "subcapitulo": "RED HORIZONTAL",
-      "partida": "Tuberías y accesorios"
+      "id": "d1",
+      "codigo_bc3": "X123",
+      "descripcion": "Suministro de acero corrugado B500S",
+      "capitulo": "Estructuras",
+      "subcapitulo": "Hormigón armado",
+      "partida": "Acero corrugado",
+      "unidad": "kg"
     }
-  ],
-  "catalogo": [
-    { "codigo": "MAT-PVC-110", "nombre": "Tubería PVC Ø110", "descripcion": "Tubería PVC saneamiento", "tags": ["PVC","tubería","110"] },
-    { "codigo": "MO-OFI-ALB", "nombre": "Oficial 1ª albañil", "descripcion": "Mano de obra", "tags": ["mano de obra","albañil"] }
   ]
 }

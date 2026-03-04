@@ -1,53 +1,46 @@
-# config/settings.py
+# config/settings.py  (OCR SERVICE)
 from __future__ import annotations
 
-from pydantic import Field, AliasChoices
-from pydantic_settings import BaseSettings
+import os
+from dataclasses import dataclass
+from pathlib import Path
+
+try:
+    from dotenv import load_dotenv  # type: ignore
+    load_dotenv()
+except Exception:
+    pass
 
 
-class Settings(BaseSettings):
-    openai_api_key: str = Field(..., alias="OPENAI_API_KEY")
+def _env_bool(name: str, default: str = "false") -> bool:
+    v = os.getenv(name, default)
+    return str(v).strip().lower() in {"1", "true", "yes", "y", "si", "sí"}
 
-    openai_model: str = Field(
-        "gpt-4o-2024-08-06",
-        validation_alias=AliasChoices("OPENAI_MODEL", "OPENAI_MODEL_NAME"),
-    )
 
-    prompts_yaml_path: str = Field("config/prompts.yaml", alias="PROMPTS_YAML_PATH")
-    prompt_key: str = Field("albaran_factura_es", alias="PROMPT_KEY")
+@dataclass(frozen=True)
+class Settings:
+    # --- OpenAI ---
+    openai_api_key: str = (os.getenv("OPENAI_API_KEY", "") or "").strip()
+    openai_model: str = (os.getenv("OPENAI_MODEL", "gpt-4.1-mini") or "").strip()
 
-    input_dir: str = Field("input", alias="INPUT_DIR")
-    output_dir: str = Field("output", alias="OUTPUT_DIR")
+    # --- Prompts ---
+    prompts_yaml_path: Path = Path(os.getenv("PROMPTS_YAML_PATH", "infrastructure/prompts/prompts.yaml"))
 
-    log_level: str = Field("INFO", alias="LOG_LEVEL")
-    log_dir: str = Field("logs", alias="LOG_DIR")
+    # --- Logging ---
+    log_dir: str = (os.getenv("LOG_DIR", "logs") or "logs").strip()
+    log_level: str = (os.getenv("LOG_LEVEL", "INFO") or "INFO").strip()
 
-    max_file_mb: int = Field(20, alias="MAX_FILE_MB")
-    overwrite_output: bool = Field(False, alias="OVERWRITE_OUTPUT")
+    # --- Debug IO (dump request/response del CLI) ---
+    # ON si OCR_SERVICE_DUMP_IO=true o si LOG_LEVEL=DEBUG
+    dump_io: bool = _env_bool("OCR_SERVICE_DUMP_IO", "false")
+    # Si vacío -> <log_dir>/bc3_io
+    dump_dir: str = (os.getenv("OCR_SERVICE_DUMP_DIR", "") or "").strip()
+    # all | errors
+    dump_mode: str = (os.getenv("OCR_SERVICE_DUMP_MODE", "all") or "all").strip().lower()
+    # imprimir rutas/info por STDERR (sin romper stdout JSON)
+    debug_stderr: bool = _env_bool("OCR_SERVICE_DEBUG_STDERR", "false")
 
-    run_mode: str = Field("batch", alias="RUN_MODE")
-    api_host: str = Field("127.0.0.1", alias="API_HOST")
-    api_port: int = Field(8000, alias="API_PORT")
-
-    result_webhook_url: str | None = Field(default=None, alias="RESULT_WEBHOOK_URL")
-    result_webhook_timeout_s: int = Field(10, alias="RESULT_WEBHOOK_TIMEOUT_S")
-
-    # --- SIMULACIÓN SERVICIO 3 (BORRABLE) ---
-    simulate_service3_excel: bool = Field(False, alias="SIMULATE_SERVICE3_EXCEL")
-    sim_service3_excel_filename: str = Field(
-        "_SIM_service3_residuos.xlsx",
-        alias="SIM_SERVICE3_EXCEL_FILENAME",
-    )
-
-    # -----------------------------
-    # NUEVO: BC3 (modo test/harness)
-    # -----------------------------
-    bc3_ingestor_json_path: str = Field("request.json", alias="BC3_INGESTOR_JSON_PATH")
-    bc3_catalog_path: str = Field("catalogo.csv", alias="BC3_CATALOG_PATH")
-    bc3_catalog_sheet: str | None = Field(default=None, alias="BC3_CATALOG_SHEET")
-    bc3_top_k_candidates: int = Field(25, alias="BC3_TOP_K_CANDIDATES")
-    bc3_output_path: str = Field("", alias="BC3_OUTPUT_PATH")
-
-    class Config:
-        env_file = ".env"
-        extra = "ignore"
+    # stdout_mode:
+    #  - json (default): stdout = JSON envelope (para consumo desde apps)
+    #  - log: stdout = texto (solo para uso manual, NO compatible con cliente)
+    stdout_mode: str = (os.getenv("OCR_SERVICE_STDOUT_MODE", "json") or "json").strip().lower()

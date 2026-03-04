@@ -23,21 +23,20 @@ class Bc3ClassificationPipeline:
 
     def run(self, req: Bc3ClassificationRequest) -> Bc3ClasificacionResultado:
         if not req.descompuestos:
-            return Bc3ClasificacionResultado(resultados=[], observaciones="Sin descompuestos de entrada.")
+            return Bc3ClasificacionResultado(resultados=[])
 
         if not req.catalogo:
-            resultados = [
-                Bc3ClasificacionLinea(
-                    id=d.id,
-                    tipo="INDETERMINADO",
-                    codigo_interno=None,
-                    confianza_pct=0,
-                    alternativas=[],
-                    observaciones="Catálogo vacío. No se puede clasificar.",
-                )
-                for d in req.descompuestos
-            ]
-            return Bc3ClasificacionResultado(resultados=resultados, observaciones="Catálogo vacío.")
+            return Bc3ClasificacionResultado(
+                resultados=[
+                    Bc3ClasificacionLinea(
+                        id=d.id,
+                        tipo="INDETERMINADO",
+                        codigo_interno=None,
+                        confianza_pct=0,
+                    )
+                    for d in req.descompuestos
+                ]
+            )
 
         top_k = int(req.top_k_candidates)
 
@@ -56,18 +55,13 @@ class Bc3ClassificationPipeline:
 
             for it, score in selected:
                 codes.add(it.codigo)
-
                 cand_list.append(
                     {
                         "codigo": it.codigo,
-
-                        # Jerarquía catálogo (clave para tu caso)
                         "descripcion_grupo": it.descripcion_grupo,
                         "descripcion_familia": it.descripcion_familia,
                         "descripcion_producto": it.descripcion_producto or it.nombre,
                         "descripcion_completa": it.descripcion_completa or it.descripcion,
-
-                        # Soporte
                         "tags": it.tags,
                         "score": round(float(score), 4),
                     }
@@ -78,14 +72,13 @@ class Bc3ClassificationPipeline:
 
         llm_items: List[Dict[str, Any]] = []
         for d in req.descompuestos:
-            contexto = self.selector.build_query(d)
             llm_items.append(
                 {
                     "id": d.id,
                     "codigo_bc3": d.codigo_bc3,
                     "unidad": d.unidad,
                     "descripcion": d.descripcion,
-                    "contexto": contexto,
+                    "contexto": self.selector.build_query(d),
                     "candidatos": candidatos_por_id.get(d.id, []),
                 }
             )
@@ -94,34 +87,25 @@ class Bc3ClassificationPipeline:
             "bc3_id": req.bc3_id,
             "descompuestos": llm_items,
             "reglas": {
-                "prioridad": "Primero encajar descripcion_grupo (tipo coste), luego descripcion_familia, luego producto.",
-                "regla_codigos": "codigo_interno debe ser uno de candidatos[].codigo",
+                "prioridad": "Primero encajar descripcion_grupo, luego descripcion_familia, luego producto.",
+                "regla_codigos": "codigo_interno debe ser uno de candidatos[].codigo del mismo descompuesto.",
             },
         }
 
         parsed, _schema_name = self.extractor.extract(prompt_key=req.prompt_key, payload=payload)
 
-        out = Bc3ClasificacionResultado.model_validate(parsed)
+        data = parsed.model_dump() if hasattr(parsed, "model_dump") else parsed
+        out = Bc3ClasificacionResultado.model_validate(data)
 
         fixed: List[Bc3ClasificacionLinea] = []
         got_ids = {r.id for r in out.resultados}
 
         for r in out.resultados:
             valid_codes = codigos_validos_por_id.get(r.id, set())
-
-            obs_parts: List[str] = []
             codigo = r.codigo_interno
 
             if codigo is not None and codigo not in valid_codes:
-                obs_parts.append("codigo_interno no estaba en candidatos; se fuerza a null.")
                 codigo = None
-
-            alternatives = [c for c in (r.alternativas or []) if c in valid_codes][:3]
-
-            obs = r.observaciones
-            if obs_parts:
-                extra = " ".join(obs_parts)
-                obs = (obs + " | " + extra) if obs else extra
 
             fixed.append(
                 Bc3ClasificacionLinea(
@@ -129,11 +113,10 @@ class Bc3ClassificationPipeline:
                     tipo=r.tipo,
                     codigo_interno=codigo,
                     confianza_pct=r.confianza_pct,
-                    alternativas=alternatives,
-                    observaciones=obs,
                 )
             )
 
+        # Asegurar 1 resultado por id de entrada
         for d in req.descompuestos:
             if d.id in got_ids:
                 continue
@@ -143,10 +126,8 @@ class Bc3ClassificationPipeline:
                     tipo="INDETERMINADO",
                     codigo_interno=None,
                     confianza_pct=0,
-                    alternativas=[],
-                    observaciones="El modelo no devolvió resultado para este id.",
                 )
             )
 
         fixed.sort(key=lambda x: x.id)
-        return Bc3ClasificacionResultado(resultados=fixed, observaciones=out.observaciones)
+        return Bc3ClasificacionResultado(resultados=fixed)
