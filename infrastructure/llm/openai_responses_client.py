@@ -11,12 +11,14 @@ from pydantic import BaseModel
 
 from domain.models.llm_attachment import LlmAttachment
 from domain.ports.llm_client import LlmVisionClient
+from infrastructure.llm.openai_sdk_compat import patch_openai_pydantic_compat
 
 logger = logging.getLogger(__name__)
 
 
 class OpenAIResponsesVisionClient(LlmVisionClient):
     def __init__(self, api_key: str) -> None:
+        patch_openai_pydantic_compat()
         http_client = self._build_http_client()
         self._client = OpenAI(api_key=api_key, http_client=http_client)
 
@@ -24,9 +26,11 @@ class OpenAIResponsesVisionClient(LlmVisionClient):
     def _build_http_client():
         try:
             from openai import DefaultHttpxClient
+
             return DefaultHttpxClient()
         except Exception:
             import httpx
+
             return httpx.Client()
 
     @staticmethod
@@ -64,7 +68,6 @@ class OpenAIResponsesVisionClient(LlmVisionClient):
                 {
                     "type": "input_file",
                     "filename": safe_name,
-                    # CLAVE: data URL para PDF
                     "file_data": self._to_data_url("application/pdf", attachment.data),
                 },
                 {"type": "input_text", "text": user_text},
@@ -74,15 +77,21 @@ class OpenAIResponsesVisionClient(LlmVisionClient):
                 {"type": "input_text", "text": user_text},
                 {
                     "type": "input_image",
-                    "image_url": self._to_data_url(attachment.mime_type, attachment.data),
+                    "image_url": self._to_data_url(
+                        attachment.mime_type,
+                        attachment.data,
+                    ),
                 },
             ]
 
         response = self._client.responses.parse(
             model=model,
-            instructions=instructions,  # system separado => más limpio/eficiente
+            instructions=instructions,
             input=[{"role": "user", "content": content}],
             text_format=response_model,
         )
+
+        if response.output_parsed is None:
+            raise ValueError("OpenAI no devolvió output_parsed en la respuesta.")
 
         return response.output_parsed

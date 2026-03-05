@@ -8,11 +8,14 @@ from typing import Any, Type
 from openai import OpenAI
 from pydantic import BaseModel
 
+from infrastructure.llm.openai_sdk_compat import patch_openai_pydantic_compat
+
 logger = logging.getLogger(__name__)
 
 
 class OpenAIResponsesTextClient:
     def __init__(self, api_key: str) -> None:
+        patch_openai_pydantic_compat()
         http_client = self._build_http_client()
         self._client = OpenAI(api_key=api_key, http_client=http_client)
 
@@ -20,9 +23,11 @@ class OpenAIResponsesTextClient:
     def _build_http_client():
         try:
             from openai import DefaultHttpxClient
+
             return DefaultHttpxClient()
         except Exception:
             import httpx
+
             return httpx.Client()
 
     def extract_structured(

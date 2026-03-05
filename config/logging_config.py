@@ -37,6 +37,23 @@ def configure_logging(log_dir: Path, level: str) -> None:
                 "encoding": "utf-8",
             },
         },
+        "loggers": {
+            "openai": {
+                "level": "INFO",
+                "handlers": [],
+                "propagate": True,
+            },
+            "httpx": {
+                "level": "INFO",
+                "handlers": [],
+                "propagate": True,
+            },
+            "httpcore": {
+                "level": "INFO",
+                "handlers": [],
+                "propagate": True,
+            },
+        },
         "root": {
             "handlers": ["console", "file"],
             "level": level,
