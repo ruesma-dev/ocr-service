@@ -1,367 +1,302 @@
 # infrastructure/catalog/product_catalog_loader.py
 from __future__ import annotations
 
-import csv
-import io
-import re
 import unicodedata
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional
 
-from openpyxl import load_workbook
+import pandas as pd
 
-from domain.models.bc3_classification_models import Bc3CatalogoItem
-
-
-def _strip_accents(text: str) -> str:
-    return "".join(
-        c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
-    )
-
-
-def _norm_header(text: str) -> str:
-    t = _strip_accents(text or "").strip().lower()
-    t = re.sub(r"[^a-z0-9]+", "_", t)
-    return t.strip("_")
-
-
-def _split_tags(value: Optional[str]) -> List[str]:
-    if not value:
-        return []
-    raw = str(value).strip()
-    if not raw:
-        return []
-    parts = re.split(r"[;,|/\t]+", raw)
-    out: List[str] = []
-    for p in parts:
-        p = p.strip()
-        if p:
-            out.append(p)
-    return out
-
-
-@dataclass(frozen=True)
-class ProductCatalogColumnMap:
-    code: str
-
-    # Campos específicos “Ruesma”
-    full_description: Optional[str]
-    product_description: Optional[str]
-    family_description: Optional[str]
-    group_description: Optional[str]
-
-    # Campos genéricos opcionales
-    tags: Optional[str]
-    extra_tag_cols: Tuple[str, ...]
+from domain.models.bc3_classification_models import (
+    Bc3CatalogoItem,
+    Bc3ClassificationRequest,
+)
 
 
 class ProductCatalogLoader:
     """
-    Carga catálogo interno desde CSV/XLSX.
+    Carga el catálogo de productos interno desde:
+    - request.catalogo embebido, o
+    - request.catalog_xlsx_path
 
-    Estructura objetivo del Excel (según tu imagen):
-    - "Codigo producto"           -> codigo
-    - "Descripcion Completa"      -> descripcion_completa
-    - "descripcion producto"      -> descripcion_producto
-    - "descripcion familia"       -> descripcion_familia
-    - "descripcion grupo"         -> descripcion_grupo
+    Mejora clave:
+    - soporta catálogos con 4 columnas (código + grupo + familia + producto)
+      aunque no exista "descripcion_completa";
+    - si falta la descripción completa, la compone automáticamente;
+    - si solo existe descripción completa, intenta desglosarla.
     """
 
-    # --- mapeos robustos (normalizados) ---
-    _CODE_KEYS = {
+    _CODE_ALIASES = {
+        "codigoproducto",
         "codigo",
         "code",
+        "codproducto",
         "cod",
-        "codigo_interno",
-        "codigo_producto",
-        "cod_producto",
-        "id",
-        "ref",
-        "referencia",
     }
-
-    _FULL_DESC_KEYS = {
-        "descripcion_completa",
+    _FULL_DESC_ALIASES = {
         "descripcioncompleta",
-        "descripcion_total",
-        "descripcion_larga",
         "descripcion",
-        "description",
+        "desccompleta",
         "desc",
-        "detalle",
-        "texto",
-        "concepto",
     }
-
-    _PRODUCT_DESC_KEYS = {
-        "descripcion_producto",
+    _PRODUCT_DESC_ALIASES = {
+        "descripcionproducto",
         "producto",
-        "nombre",
-        "name",
-        "denominacion",
-        "denominacion_producto",
+        "descproducto",
     }
-
-    _FAMILY_KEYS = {
-        "descripcion_familia",
+    _FAMILY_DESC_ALIASES = {
+        "descripcionfamilia",
         "familia",
-        "family",
-        "familia_compra",
-        "descripcion_familia_compra",
+        "descfamilia",
     }
-
-    _GROUP_KEYS = {
-        "descripcion_grupo",
+    _GROUP_DESC_ALIASES = {
+        "descripciongrupo",
         "grupo",
-        "group",
-        "tipo_coste",
-        "tipo_de_coste",
+        "descgrupo",
         "tipo",
-        "clase",
+        "descripciontipo",
     }
 
-    _TAGS_KEYS = {
-        "tags",
-        "etiquetas",
-        "keywords",
-        "palabras_clave",
-    }
-
-    # Columnas que aportan contexto y se pueden meter como tags extra
-    _EXTRA_TAG_KEYS = {
-        "familia",
-        "grupo",
-        "categoria",
-        "subcategoria",
-        "tipo",
-        "clase",
-        "subclase",
-        "seccion",
-        "unidad",
-        "ud",
-        "um",
-        # importantes para tu excel:
-        "descripcion_familia",
-        "descripcion_grupo",
-    }
-
-    def load(
+    def load_from_request(
         self,
-        *,
-        path: Path,
-        sheet_name: Optional[str] = None,
-        encoding: str = "utf-8-sig",
+        req: Bc3ClassificationRequest,
     ) -> List[Bc3CatalogoItem]:
-        if not path.exists():
-            raise FileNotFoundError(f"Catálogo no encontrado: {path}")
+        if req.catalogo:
+            return [
+                item
+                if isinstance(item, Bc3CatalogoItem)
+                else Bc3CatalogoItem.model_validate(item)
+                for item in req.catalogo
+            ]
 
-        ext = path.suffix.lower().strip()
-        if ext in {".xlsx", ".xlsm"}:
-            rows, headers = self._read_xlsx(path, sheet_name=sheet_name)
-            colmap = self._infer_columns(headers)
-            return self._rows_to_items(rows, headers=headers, colmap=colmap)
-
-        if ext in {".csv", ".txt"}:
-            text = path.read_bytes().decode(encoding, errors="replace")
-            rows, headers = self._read_csv_text(text)
-            colmap = self._infer_columns(headers)
-            return self._rows_to_items(rows, headers=headers, colmap=colmap)
-
-        raise ValueError(f"Extensión de catálogo no soportada: {ext} (usa CSV o XLSX)")
-
-    @staticmethod
-    def _pick_best_delimiter(first_line: str) -> str:
-        candidates = [";", ",", "\t", "|"]
-        best = ";"
-        best_count = -1
-        for d in candidates:
-            c = first_line.count(d)
-            if c > best_count:
-                best_count = c
-                best = d
-        return best
-
-    def _read_csv_text(self, text: str) -> Tuple[List[Dict[str, str]], List[str]]:
-        text = text.lstrip("\ufeff")
-        lines = text.splitlines()
-        if not lines:
-            return [], []
-
-        delimiter = self._pick_best_delimiter(lines[0])
-
-        reader = csv.DictReader(io.StringIO(text), delimiter=delimiter)
-        headers = reader.fieldnames or []
-        rows: List[Dict[str, str]] = []
-        for row in reader:
-            cleaned: Dict[str, str] = {}
-            for k, v in (row or {}).items():
-                if k is None:
-                    continue
-                cleaned[str(k)] = "" if v is None else str(v)
-            rows.append(cleaned)
-        return rows, headers
-
-    def _read_xlsx(
-        self, path: Path, sheet_name: Optional[str]
-    ) -> Tuple[List[Dict[str, str]], List[str]]:
-        wb = load_workbook(path, read_only=True, data_only=True)
-        if sheet_name and sheet_name in wb.sheetnames:
-            ws = wb[sheet_name]
-        else:
-            ws = wb[wb.sheetnames[0]]
-
-        rows_iter = ws.iter_rows(values_only=True)
-
-        try:
-            headers_row = next(rows_iter)
-        except StopIteration:
-            return [], []
-
-        # Mantener posiciones para no desalinear si hay columnas vacías
-        headers_all = [str(h).strip() if h is not None else "" for h in headers_row]
-        headers = [h for h in headers_all if h]
-
-        out_rows: List[Dict[str, str]] = []
-        for r in rows_iter:
-            if r is None:
-                continue
-            data: Dict[str, str] = {}
-            for idx, header in enumerate(headers_all):
-                if not header:
-                    continue
-                val = r[idx] if idx < len(r) else None
-                data[header] = "" if val is None else str(val).strip()
-
-            if all(not v for v in data.values()):
-                continue
-            out_rows.append(data)
-
-        return out_rows, headers
-
-    def _infer_columns(self, headers: List[str]) -> ProductCatalogColumnMap:
-        if not headers:
-            raise ValueError("El catálogo no tiene cabecera (headers vacíos).")
-
-        norm_to_raw: Dict[str, str] = {}
-        for h in headers:
-            norm_to_raw[_norm_header(h)] = h
-
-        def find_first(keys: Iterable[str]) -> Optional[str]:
-            for k in keys:
-                nk = _norm_header(k)
-                if nk in norm_to_raw:
-                    return norm_to_raw[nk]
-            return None
-
-        code_col = find_first(self._CODE_KEYS)
-        if not code_col:
+        if not req.catalog_xlsx_path:
             raise ValueError(
-                "No se detectó columna de código ('Codigo producto'). "
-                f"Headers disponibles: {headers}"
+                "No se ha informado catálogo embebido ni catalog_xlsx_path."
             )
 
-        full_col = find_first(self._FULL_DESC_KEYS)
-        product_col = find_first(self._PRODUCT_DESC_KEYS)
-        family_col = find_first(self._FAMILY_KEYS)
-        group_col = find_first(self._GROUP_KEYS)
-
-        tags_col = find_first(self._TAGS_KEYS)
-
-        extra_tag_cols: List[str] = []
-        for k in self._EXTRA_TAG_KEYS:
-            c = find_first([k])
-            if c and c not in {code_col, full_col, product_col, family_col, group_col, tags_col}:
-                extra_tag_cols.append(c)
-
-        return ProductCatalogColumnMap(
-            code=code_col,
-            full_description=full_col,
-            product_description=product_col,
-            family_description=family_col,
-            group_description=group_col,
-            tags=tags_col,
-            extra_tag_cols=tuple(extra_tag_cols),
+        return self.load_from_excel(
+            xlsx_path=Path(req.catalog_xlsx_path),
+            sheet_name=req.catalog_sheet,
         )
 
-    def _rows_to_items(
+    def load_from_excel(
         self,
-        rows: List[Dict[str, str]],
         *,
-        headers: List[str],
-        colmap: ProductCatalogColumnMap,
+        xlsx_path: Path,
+        sheet_name: Optional[str] = None,
     ) -> List[Bc3CatalogoItem]:
+        if not xlsx_path.exists():
+            raise FileNotFoundError(f"No existe el catálogo XLSX: {xlsx_path}")
+
+        df = pd.read_excel(
+            xlsx_path,
+            sheet_name=sheet_name if sheet_name else 0,
+            dtype=str,
+            engine="openpyxl",
+        ).fillna("")
+
+        if df.empty:
+            raise ValueError(f"El catálogo está vacío: {xlsx_path}")
+
+        column_map = self._resolve_column_map(df.columns)
+        if column_map is None:
+            return self._load_legacy_two_column_catalog(df)
+
         items: List[Bc3CatalogoItem] = []
-        seen_codes: set[str] = set()
-
-        for row in rows:
-            code = (row.get(colmap.code) or "").strip()
-            if not code:
+        for _, row in df.iterrows():
+            codigo = self._clean_text(row[column_map["codigo"]])
+            if not codigo:
                 continue
-            if code in seen_codes:
+
+            descripcion_completa = self._get_cell_value(
+                row=row,
+                column_name=column_map.get("descripcion_completa"),
+            )
+            descripcion_producto = self._get_cell_value(
+                row=row,
+                column_name=column_map.get("descripcion_producto"),
+            )
+            descripcion_familia = self._get_cell_value(
+                row=row,
+                column_name=column_map.get("descripcion_familia"),
+            )
+            descripcion_grupo = self._get_cell_value(
+                row=row,
+                column_name=column_map.get("descripcion_grupo"),
+            )
+
+            if descripcion_completa and not (
+                descripcion_producto or descripcion_familia or descripcion_grupo
+            ):
+                _, grupo_from_full, familia_from_full, producto_from_full = (
+                    self._split_full_description(descripcion_completa)
+                )
+                descripcion_grupo = descripcion_grupo or grupo_from_full
+                descripcion_familia = descripcion_familia or familia_from_full
+                descripcion_producto = descripcion_producto or producto_from_full
+
+            if not descripcion_completa:
+                descripcion_completa = self._compose_full_description(
+                    descripcion_grupo=descripcion_grupo,
+                    descripcion_familia=descripcion_familia,
+                    descripcion_producto=descripcion_producto,
+                )
+
+            if not any(
+                (
+                    descripcion_completa,
+                    descripcion_producto,
+                    descripcion_familia,
+                    descripcion_grupo,
+                )
+            ):
                 continue
-            seen_codes.add(code)
-
-            full = (row.get(colmap.full_description) or "").strip() if colmap.full_description else ""
-            product = (row.get(colmap.product_description) or "").strip() if colmap.product_description else ""
-            family = (row.get(colmap.family_description) or "").strip() if colmap.family_description else ""
-            group = (row.get(colmap.group_description) or "").strip() if colmap.group_description else ""
-
-            # Tags: priorizamos grupo y familia porque son “nivel 1 y 2”
-            tags: List[str] = []
-            if group:
-                tags.append(group)
-            if family:
-                tags.append(family)
-
-            if colmap.tags:
-                tags.extend(_split_tags(row.get(colmap.tags)))
-
-            for c in colmap.extra_tag_cols:
-                v = (row.get(c) or "").strip()
-                if v:
-                    tags.append(v)
-
-            # Dedup tags
-            tags_norm: List[str] = []
-            seen_t = set()
-            for t in tags:
-                tt = t.strip()
-                if not tt:
-                    continue
-                key = tt.lower()
-                if key in seen_t:
-                    continue
-                seen_t.add(key)
-                tags_norm.append(tt)
-
-            # Para scoring legacy:
-            # - nombre => descripcion_producto
-            # - descripcion => descripcion_completa (si existe) o composición
-            name = product or None
-            desc = full or None
-            if not desc:
-                # fallback: monta una descripción consistente
-                parts = [p for p in [group, family, product] if p]
-                desc = ", ".join(parts) if parts else None
 
             items.append(
                 Bc3CatalogoItem(
-                    codigo=code,
-                    nombre=name,
-                    descripcion=desc,
-                    tags=tags_norm,
-                    descripcion_completa=full or None,
-                    descripcion_producto=product or None,
-                    descripcion_familia=family or None,
-                    descripcion_grupo=group or None,
+                    codigo=codigo,
+                    descripcion_completa=descripcion_completa,
+                    descripcion_producto=descripcion_producto,
+                    descripcion_familia=descripcion_familia,
+                    descripcion_grupo=descripcion_grupo,
                 )
             )
 
         if not items:
             raise ValueError(
-                "El catálogo se cargó pero no produjo ningún item (0 códigos válidos). "
-                "Revisa que exista la columna 'Codigo producto' y tenga valores."
+                f"No se han podido cargar filas válidas del catálogo: {xlsx_path}"
             )
 
         return items
+
+    def _load_legacy_two_column_catalog(
+        self,
+        df: pd.DataFrame,
+    ) -> List[Bc3CatalogoItem]:
+        """
+        Compatibilidad con un catálogo antiguo de 2 columnas:
+        - col 0: código
+        - col 1: descripción completa
+        """
+        if df.shape[1] < 2:
+            raise ValueError(
+                "El catálogo debe tener 5 columnas estándar, "
+                "4 columnas (código/grupo/familia/producto) o, como mínimo, "
+                "2 columnas (código + descripción completa)."
+            )
+
+        code_col = df.columns[0]
+        desc_col = df.columns[1]
+
+        items: List[Bc3CatalogoItem] = []
+        for _, row in df.iterrows():
+            codigo = self._clean_text(row[code_col])
+            descripcion_completa = self._clean_text(row[desc_col])
+
+            if not codigo:
+                continue
+
+            tipo, grupo, familia, producto = self._split_full_description(
+                descripcion_completa
+            )
+
+            items.append(
+                Bc3CatalogoItem(
+                    codigo=codigo,
+                    descripcion_completa=descripcion_completa,
+                    descripcion_producto=producto,
+                    descripcion_familia=familia,
+                    descripcion_grupo=grupo or tipo,
+                )
+            )
+
+        if not items:
+            raise ValueError("Catálogo vacío tras procesar el formato legacy.")
+
+        return items
+
+    def _resolve_column_map(self, columns: Iterable[str]) -> Optional[dict]:
+        normalized = {
+            self._normalize_header(str(column)): str(column)
+            for column in columns
+        }
+
+        code_col = self._find_first(normalized, self._CODE_ALIASES)
+        full_col = self._find_first(normalized, self._FULL_DESC_ALIASES)
+        product_col = self._find_first(normalized, self._PRODUCT_DESC_ALIASES)
+        family_col = self._find_first(normalized, self._FAMILY_DESC_ALIASES)
+        group_col = self._find_first(normalized, self._GROUP_DESC_ALIASES)
+
+        if not code_col:
+            return None
+
+        if not any([full_col, product_col, family_col, group_col]):
+            return None
+
+        return {
+            "codigo": code_col,
+            "descripcion_completa": full_col,
+            "descripcion_producto": product_col,
+            "descripcion_familia": family_col,
+            "descripcion_grupo": group_col,
+        }
+
+    @staticmethod
+    def _find_first(
+        normalized_map: dict[str, str],
+        aliases: set[str],
+    ) -> Optional[str]:
+        for alias in aliases:
+            if alias in normalized_map:
+                return normalized_map[alias]
+        return None
+
+    @staticmethod
+    def _normalize_header(value: str) -> str:
+        txt = unicodedata.normalize("NFKD", value)
+        txt = "".join(char for char in txt if not unicodedata.combining(char))
+        txt = txt.lower().strip()
+        return "".join(char for char in txt if char.isalnum())
+
+    @staticmethod
+    def _clean_text(value: object) -> str:
+        if value is None:
+            return ""
+        return str(value).strip()
+
+    @classmethod
+    def _get_cell_value(
+        cls,
+        *,
+        row: pd.Series,
+        column_name: Optional[str],
+    ) -> str:
+        if not column_name:
+            return ""
+        return cls._clean_text(row[column_name])
+
+    @staticmethod
+    def _compose_full_description(
+        *,
+        descripcion_grupo: str,
+        descripcion_familia: str,
+        descripcion_producto: str,
+    ) -> str:
+        parts = [
+            part
+            for part in (
+                "Coste Directo",
+                descripcion_grupo,
+                descripcion_familia,
+                descripcion_producto,
+            )
+            if part
+        ]
+        return ", ".join(parts)
+
+    @staticmethod
+    def _split_full_description(full_desc: str) -> tuple[str, str, str, str]:
+        parts = [part.strip() for part in (full_desc or "").split(",")]
+        while len(parts) < 4:
+            parts.append("")
+        return parts[0], parts[1], parts[2], parts[3]

@@ -5,10 +5,10 @@ from typing import Dict, Type
 
 from pydantic import BaseModel
 
+from domain.models.bc3_classification_models import Bc3ClasificacionResultado
 from domain.models.ocr_models import DocumentoOcr
 from domain.models.residuos_models import ResiduosDocumento
 from domain.models.residuos_paquete import ResiduosPaquete
-from domain.models.bc3_classification_models import Bc3ClasificacionResultado
 
 
 class SchemaRegistry:
@@ -25,4 +25,6 @@ class SchemaRegistry:
             return self._schemas[schema_name]
 
         available = ", ".join(sorted(self._schemas.keys()))
-        raise KeyError(f"Schema '{schema_name}' no registrado. Disponibles: {available}")
+        raise KeyError(
+            f"Schema '{schema_name}' no registrado. Disponibles: {available}"
+        )

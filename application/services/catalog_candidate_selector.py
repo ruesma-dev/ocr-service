@@ -3,223 +3,319 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from dataclasses import dataclass
 from difflib import SequenceMatcher
-from typing import List, Tuple
+from typing import List, Sequence
 
-from domain.models.bc3_classification_models import Bc3CatalogoItem, Bc3Descompuesto
+from domain.models.bc3_classification_models import (
+    Bc3CatalogoItem,
+    Bc3DescompuestoInput,
+    Bc3PromptCandidate,
+)
 
+_STOPWORDS = {
+    "a",
+    "al",
+    "con",
+    "de",
+    "del",
+    "e",
+    "el",
+    "en",
+    "entre",
+    "la",
+    "las",
+    "lo",
+    "los",
+    "o",
+    "para",
+    "por",
+    "que",
+    "se",
+    "sin",
+    "su",
+    "sus",
+    "u",
+    "un",
+    "una",
+    "uno",
+    "unos",
+    "unas",
+    "y",
+}
 
-def _strip_accents(text: str) -> str:
-    return "".join(
-        c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
-    )
+_SYNONYM_GROUPS = {
+    "alquiler": {"alquiler", "renting"},
+    "demolicion": {"demolicion", "demoliciones", "derribo", "derribos", "desmontaje"},
+    "instalacion": {"instalacion", "instalaciones", "montaje", "colocacion"},
+    "mobiliario": {"mobiliario", "mueble", "muebles", "enser", "enseres"},
+    "proteccion": {"proteccion", "protecciones"},
+    "residuos": {"residuo", "residuos", "escombro", "escombros"},
+    "retirada": {"retirada", "retirar", "despeje", "evacuacion"},
+    "suministro": {"suministro", "aporte", "material", "materiales"},
+}
 
-
-def _normalize(text: str) -> str:
-    t = _strip_accents(text or "").lower()
-    t = re.sub(r"[^a-z0-9]+", " ", t)
-    t = re.sub(r"\s+", " ", t).strip()
-    return t
-
-
-def _tokenize(text: str) -> set[str]:
-    if not text:
-        return set()
-    return set(_normalize(text).split())
-
-
-def _seq_ratio(a: str, b: str) -> float:
-    a_n = _normalize(a)
-    b_n = _normalize(b)
-    if not a_n or not b_n:
-        return 0.0
-    return SequenceMatcher(None, a_n, b_n).ratio()
-
-
-def _jaccard(a: set[str], b: set[str]) -> float:
-    if not a or not b:
-        return 0.0
-    inter = len(a & b)
-    union = len(a | b)
-    return inter / union if union else 0.0
-
-
-@dataclass(frozen=True)
-class Candidate:
-    item: Bc3CatalogoItem
-    score: float
+_VARIANT_TO_CANONICAL = {
+    variant: canonical
+    for canonical, variants in _SYNONYM_GROUPS.items()
+    for variant in variants
+}
 
 
 class CatalogCandidateSelector:
     """
-    Devuelve top-K candidatos del catálogo.
+    Prefiltro robusto para BC3.
 
-    Ajustado a tu Excel:
-    - Penaliza fuerte si no encaja el GRUPO (tipo de coste) cuando hay evidencia.
-    - Penaliza medio si no encaja la FAMILIA.
-    - Luego afina por PRODUCTO / descripción completa.
+    Problemas corregidos respecto a la versión original:
+    - normaliza tildes antes de tokenizar;
+    - elimina stopwords en español para no sesgar por "de", "y", etc.;
+    - añade una señal difusa (SequenceMatcher) para no depender solo de
+      intersección exacta de tokens;
+    - mantiene un orden determinista por score.
     """
 
-    @staticmethod
-    def _infer_cost_hints(text: str) -> List[str]:
-        """
-        Heurística ligera para reforzar el match por 'descripcion_grupo'.
-        """
-        t = _normalize(text)
+    def select(
+        self,
+        *,
+        descompuesto: Bc3DescompuestoInput,
+        catalogo: Sequence[Bc3CatalogoItem],
+        top_k: int,
+    ) -> List[Bc3PromptCandidate]:
+        if not catalogo:
+            raise ValueError("El catálogo está vacío. No se puede clasificar.")
 
-        hints: List[str] = []
+        top_k = max(1, int(top_k))
+        query_text = self._build_query_text(descompuesto)
+        query_normalized = self._normalize_text(query_text)
+        query_tokens = self._tokenize(query_normalized)
+        group_hint = self._infer_group_hint(query_normalized)
 
-        # maquinaria/alquiler/medios auxiliares
-        if "alquiler" in t or "rent" in t:
-            hints.append("alquiler")
-        if "maquinaria" in t or "excav" in t or "grua" in t or "retro" in t:
-            hints.append("maquinaria")
-        if "medios auxiliares" in t or "andam" in t or "valla" in t or "caseta" in t:
-            hints.append("medios auxiliares")
+        scored: list[tuple[Bc3CatalogoItem, float]] = []
+        for item in catalogo:
+            score = self._score_item(
+                item=item,
+                query_tokens=query_tokens,
+                query_text=query_normalized,
+                group_hint=group_hint,
+            )
+            scored.append((item, score))
 
-        # materiales / mano de obra / mixto
-        supply = any(k in t for k in ["suministro", "material", "aporte", "acopio"])
-        labour = any(
-            k in t
-            for k in [
-                "mano de obra",
-                "m o",
-                "mo ",
-                "montaje",
-                "coloc",
-                "instal",
-                "subcontrat",
-                "oficial",
-                "peon",
-            ]
+        scored.sort(key=lambda row: (-row[1], row[0].codigo))
+        selected = scored[:top_k] or [(catalogo[0], 0.0)]
+
+        return [
+            Bc3PromptCandidate(
+                codigo=item.codigo,
+                descripcion_grupo=item.descripcion_grupo,
+                descripcion_familia=item.descripcion_familia,
+                descripcion_producto=item.descripcion_producto,
+                descripcion_completa=item.descripcion_completa,
+                tags=self._build_tags(item=item, group_hint=group_hint),
+                score=round(float(score), 4),
+            )
+            for item, score in selected
+        ]
+
+    def _score_item(
+        self,
+        *,
+        item: Bc3CatalogoItem,
+        query_tokens: set[str],
+        query_text: str,
+        group_hint: str | None,
+    ) -> float:
+        product_text = self._normalize_text(item.descripcion_producto)
+        family_text = self._normalize_text(item.descripcion_familia)
+        group_text = self._normalize_text(item.descripcion_grupo)
+        full_text = self._normalize_text(item.descripcion_completa or item.search_text())
+
+        product_tokens = self._tokenize(product_text)
+        family_tokens = self._tokenize(family_text)
+        group_tokens = self._tokenize(group_text)
+        full_tokens = self._tokenize(full_text)
+
+        score = 0.0
+        score += self._weighted_overlap(query_tokens, product_tokens) * 5.5
+        score += self._weighted_overlap(query_tokens, family_tokens) * 3.0
+        score += self._weighted_overlap(query_tokens, group_tokens) * 2.0
+        score += self._weighted_overlap(query_tokens, full_tokens) * 1.5
+
+        score += SequenceMatcher(None, query_text, product_text).ratio() * 40.0
+        score += SequenceMatcher(None, query_text, family_text).ratio() * 16.0
+        score += SequenceMatcher(None, query_text, full_text).ratio() * 20.0
+
+        if product_text and product_text in query_text:
+            score += 18.0
+        elif query_text and query_text in product_text:
+            score += 10.0
+
+        score += self._domain_bonus(query_tokens=query_tokens, full_tokens=full_tokens)
+        score += self._group_bonus(
+            group_hint=group_hint,
+            group_text=group_text,
+            full_text=full_text,
         )
-
-        if supply and labour:
-            hints.append("suministro con montaje")
-            hints.append("montaje")
-            hints.append("materiales")
-        elif supply:
-            hints.append("materiales")
-            hints.append("suministro")
-        elif labour:
-            hints.append("mano de obra")
-            hints.append("montaje")
-
-        return hints
-
-    def build_query(self, d: Bc3Descompuesto) -> str:
-        parts = []
-        if d.capitulo:
-            parts.append(d.capitulo)
-        if d.subcapitulo:
-            parts.append(d.subcapitulo)
-        if d.partida:
-            parts.append(d.partida)
-        parts.append(d.descripcion or "")
-
-        base = " > ".join([p for p in parts if p])
-        hints = self._infer_cost_hints(base)
-
-        if hints:
-            return base + " | HINTS: " + ", ".join(hints)
-        return base
-
-    def _group_prefilter(self, query: str, catalogo: List[Bc3CatalogoItem]) -> List[Bc3CatalogoItem]:
-        """
-        Prefiltro suave:
-        - Solo aplica si detectamos alquiler/maquinaria/medios auxiliares (muy discriminante).
-        - Para materiales vs mano de obra preferimos no filtrar duro para no perder opciones.
-        """
-        q = _normalize(query)
-
-        def group_contains(item: Bc3CatalogoItem, token: str) -> bool:
-            g = _normalize(item.descripcion_grupo or "")
-            return token in g
-
-        if "alquiler" in q:
-            filtered = [it for it in catalogo if group_contains(it, "alquiler")]
-            return filtered or catalogo
-
-        if "maquinaria" in q:
-            filtered = [it for it in catalogo if group_contains(it, "maquinaria")]
-            return filtered or catalogo
-
-        if "medios auxiliares" in q:
-            filtered = [it for it in catalogo if ("medios" in _normalize(it.descripcion_grupo or ""))]
-            return filtered or catalogo
-
-        return catalogo
-
-    def score(self, query: str, item: Bc3CatalogoItem) -> float:
-        q_tokens = _tokenize(query)
-        if not q_tokens:
-            return 0.0
-
-        grupo = item.descripcion_grupo or ""
-        familia = item.descripcion_familia or ""
-        producto = item.descripcion_producto or item.nombre or ""
-        completa = item.descripcion_completa or item.descripcion or ""
-
-        grupo_tokens = _tokenize(grupo)
-        familia_tokens = _tokenize(familia)
-        producto_tokens = _tokenize(producto)
-        completa_tokens = _tokenize(completa)
-
-        # Scores jerárquicos
-        s_grupo = _jaccard(q_tokens, grupo_tokens)
-        s_familia = _jaccard(q_tokens, familia_tokens)
-        s_producto = _jaccard(q_tokens, producto_tokens)
-        s_completa = _jaccard(q_tokens, completa_tokens)
-
-        s_ratio_producto = _seq_ratio(query, producto)
-
-        # Pesos: GRUPO > FAMILIA > PRODUCTO > COMPLETA
-        score = (
-            (0.45 * s_grupo)
-            + (0.25 * s_familia)
-            + (0.20 * max(s_producto, s_ratio_producto))
-            + (0.10 * s_completa)
-        )
-
-        # Penalización si grupo/familia existen pero no hay match alguno.
-        # (No anula totalmente para no perder casos ambiguos.)
-        if grupo_tokens and s_grupo == 0.0:
-            score *= 0.40
-        if familia_tokens and s_familia == 0.0:
-            score *= 0.70
-
-        # Bonus pequeño por tags si existen
-        tag_tokens = _tokenize(" ".join(item.tags or []))
-        if tag_tokens and len(q_tokens & tag_tokens) > 0:
-            score *= 1.05
 
         return score
 
-    def select_top_k(
-        self,
-        *,
-        descompuesto: Bc3Descompuesto,
-        catalogo: List[Bc3CatalogoItem],
-        top_k: int,
-    ) -> List[Tuple[Bc3CatalogoItem, float]]:
-        query = self.build_query(descompuesto)
+    def _build_query_text(self, descompuesto: Bc3DescompuestoInput) -> str:
+        parts = [
+            descompuesto.descripcion or "",
+            descompuesto.partida or "",
+            descompuesto.subcapitulo or "",
+            descompuesto.capitulo or "",
+            descompuesto.unidad or "",
+        ]
+        return " | ".join(part for part in parts if part).strip(" |")
 
-        # Prefiltro suave por grupo (cuando aplica)
-        catalogo_eff = self._group_prefilter(query, catalogo)
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        normalized = unicodedata.normalize("NFKD", text or "")
+        normalized = "".join(
+            char for char in normalized if not unicodedata.combining(char)
+        )
+        normalized = normalized.lower()
+        normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+        return re.sub(r"\s+", " ", normalized).strip()
 
-        scored: List[Candidate] = []
-        for it in catalogo_eff:
-            s = self.score(query, it)
-            if s <= 0:
+    @classmethod
+    def _tokenize(cls, normalized_text: str) -> set[str]:
+        if not normalized_text:
+            return set()
+
+        tokens: set[str] = set()
+        for raw_token in normalized_text.split():
+            if len(raw_token) <= 1:
                 continue
-            scored.append(Candidate(item=it, score=s))
+            if raw_token in _STOPWORDS:
+                continue
+            token = _VARIANT_TO_CANONICAL.get(raw_token, raw_token)
+            tokens.add(token)
+        return tokens
 
-        scored.sort(key=lambda x: x.score, reverse=True)
+    @staticmethod
+    def _weighted_overlap(left: set[str], right: set[str]) -> float:
+        if not left or not right:
+            return 0.0
 
-        if not scored:
-            # fallback duro: primeros top_k del catálogo filtrado o completo
-            base = catalogo_eff if catalogo_eff else catalogo
-            return [(it, 0.0) for it in base[:top_k]]
+        overlap = left & right
+        score = 0.0
+        for token in overlap:
+            score += 1.0 + min(len(token), 12) / 12.0
+        return score
 
-        return [(c.item, c.score) for c in scored[:top_k]]
+    @staticmethod
+    def _domain_bonus(*, query_tokens: set[str], full_tokens: set[str]) -> float:
+        score = 0.0
+
+        if {"retirada", "demolicion"} & query_tokens and {"retirada", "demolicion"} & full_tokens:
+            score += 14.0
+
+        if {"mobiliario"} & query_tokens and {"mobiliario"} & full_tokens:
+            score += 10.0
+
+        if {"residuos"} & query_tokens and {"residuos"} & full_tokens:
+            score += 8.0
+
+        if {"instalacion"} & query_tokens and {"instalacion"} & full_tokens:
+            score += 8.0
+
+        if {"suministro"} & query_tokens and {"suministro"} & full_tokens:
+            score += 8.0
+
+        return score
+
+    @staticmethod
+    def _group_bonus(
+        *,
+        group_hint: str | None,
+        group_text: str,
+        full_text: str,
+    ) -> float:
+        if group_hint == "SUMINISTRO":
+            if "materia" in group_text or "suministro" in full_text:
+                return 22.0
+
+        if group_hint == "MONTAJE":
+            if "mano de obra" in group_text or "montaje" in full_text:
+                return 22.0
+
+        if group_hint == "SUMINISTRO_CON_MONTAJE":
+            if "aporte" in group_text or (
+                "suministro" in full_text and "montaje" in full_text
+            ):
+                return 28.0
+
+        if group_hint == "MAQUINARIA_ALQUILER":
+            if "alquiler" in group_text:
+                return 26.0
+
+        if group_hint == "MAQUINARIA_COMPRA":
+            if "maquinaria" in group_text and "alquiler" not in group_text:
+                return 20.0
+
+        if group_hint == "MEDIOS_AUXILIARES":
+            if "medios auxiliares" in group_text:
+                return 26.0
+
+        return 0.0
+
+    @staticmethod
+    def _build_tags(
+        *,
+        item: Bc3CatalogoItem,
+        group_hint: str | None,
+    ) -> List[str]:
+        tags: List[str] = []
+        if group_hint:
+            tags.append(f"hint:{group_hint}")
+        if item.descripcion_grupo:
+            tags.append(item.descripcion_grupo)
+        if item.descripcion_familia:
+            tags.append(item.descripcion_familia)
+        return tags[:5]
+
+    @staticmethod
+    def _infer_group_hint(text: str) -> str | None:
+        txt = text or ""
+
+        has_supply = "suministro" in txt or "material" in txt
+        has_install = any(
+            word in txt
+            for word in ("montaje", "colocacion", "instalacion")
+        )
+        has_rental = "alquiler" in txt
+        has_machinery = any(
+            word in txt
+            for word in ("maquinaria", "excavadora", "grua", "dumper", "camion")
+        )
+        has_aux = any(
+            word in txt
+            for word in (
+                "andamio",
+                "andamios",
+                "valla",
+                "vallas",
+                "caseta",
+                "proteccion",
+            )
+        )
+
+        if has_aux:
+            return "MEDIOS_AUXILIARES"
+
+        if has_rental and has_machinery:
+            return "MAQUINARIA_ALQUILER"
+
+        if has_machinery and not has_rental:
+            return "MAQUINARIA_COMPRA"
+
+        if has_supply and has_install:
+            return "SUMINISTRO_CON_MONTAJE"
+
+        if has_install and not has_supply:
+            return "MONTAJE"
+
+        if has_supply:
+            return "SUMINISTRO"
+
+        return None

@@ -30,8 +30,6 @@ class ProductCatalogCache:
     """
     Cache en memoria por (ruta_xlsx_resuelta, sheet).
     Si cambia el mtime del archivo, se recarga automáticamente.
-
-    Pensado para llamadas API repetidas desde programas externos.
     """
 
     def __init__(self) -> None:
@@ -44,7 +42,12 @@ class ProductCatalogCache:
         sheet_key = (sheet or "").strip()
         return str(path.resolve()), sheet_key
 
-    def get_or_load(self, *, catalog_path: str, sheet_name: Optional[str] = None) -> List[Bc3CatalogoItem]:
+    def get_or_load(
+        self,
+        *,
+        catalog_path: str,
+        sheet_name: Optional[str] = None,
+    ) -> List[Bc3CatalogoItem]:
         path = Path(catalog_path)
         if not path.exists():
             raise FileNotFoundError(f"Catálogo no encontrado: {path}")
@@ -57,8 +60,10 @@ class ProductCatalogCache:
             if cached and cached.mtime == stat.st_mtime and cached.items:
                 return list(cached.items)
 
-        # Cargar fuera del lock para no bloquear otras requests
-        items = self._loader.load(path=path, sheet_name=sheet_name)
+        items = self._loader.load_from_excel(
+            xlsx_path=path,
+            sheet_name=sheet_name,
+        )
 
         new_cached = CachedCatalog(
             items=items,
@@ -80,9 +85,9 @@ class ProductCatalogCache:
 
     def list_cache(self) -> List[dict]:
         with self._lock:
-            out: List[dict] = []
+            output: List[dict] = []
             for (path_key, sheet_key), entry in self._cache.items():
-                out.append(
+                output.append(
                     {
                         "path": path_key,
                         "sheet": sheet_key or None,
@@ -91,7 +96,7 @@ class ProductCatalogCache:
                         "mtime": entry.mtime,
                     }
                 )
-            return out
+            return output
 
     def clear(self) -> None:
         with self._lock:

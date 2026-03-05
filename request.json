@@ -1,18 +1,17 @@
 {
   "prompt_key": "bc3_clasificador_es",
-  "bc3_id": "presupuesto_001",
-  "top_k_candidates": 25,
-  "catalog_xlsx_path": "C:\\Users\\pgris\\PycharmProjects\\ocr_service\\input\\productos_ia.xlsx",
-  "catalog_sheet": "Productos",
+  "bc3_id": "RESTAURANTE EL TOBOGAN (importado)_limpio",
+  "top_k_candidates": 20,
+  "catalog_xlsx_path": "C:\\Users\\pgris\\OneDrive - Ruesma\\Documentos\\BC\\productos_ia.xlsx",
   "descompuestos": [
     {
-      "id": "d1",
-      "codigo_bc3": "X123",
-      "descripcion": "Suministro de acero corrugado B500S",
-      "capitulo": "Estructuras",
-      "subcapitulo": "Hormigón armado",
-      "partida": "Acero corrugado",
-      "unidad": "kg"
+      "id": "01.01.1",
+      "codigo_bc3": "01.01.1",
+      "descripcion": "DESPEJE Y RETIRADA DE MOBILIARIO Y ENSERES",
+      "capitulo": "TRABAJOS PREVIOS Y DEMOLICIONES",
+      "subcapitulo": null,
+      "partida": "DESPEJE Y RETIRADA DE MOBILIARIO Y ENSERES",
+      "unidad": "M2"
     }
   ]
 }
