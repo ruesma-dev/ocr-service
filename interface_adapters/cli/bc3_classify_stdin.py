@@ -73,6 +73,9 @@ def main() -> int:
         print(f"Invalid request schema: {exc}", file=sys.stderr)
         return 2
 
+    effective_batch_size = int(req.llm_batch_size or settings.bc3_llm_batch_size)
+    req = req.model_copy(update={"llm_batch_size": effective_batch_size})
+
     prompt_repo = YamlPromptRepository(settings.prompts_yaml_path)
     schema_registry = SchemaRegistry()
 
@@ -91,13 +94,16 @@ def main() -> int:
     )
 
     logger.info(
-        "CLI bc3 classify. prompt_key=%s model=%s bc3_id=%s descompuestos=%s catalog_source=%s top_k=%s",
+        "CLI bc3 classify. prompt_key=%s model=%s bc3_id=%s descompuestos=%s "
+        "catalog_source=%s top_k=%s llm_batch_size=%s ids=%s",
         req.prompt_key,
         settings.openai_model,
         req.bc3_id,
         len(req.descompuestos),
         "embedded" if req.catalogo else req.catalog_xlsx_path,
         req.top_k_candidates,
+        req.llm_batch_size,
+        [item.id for item in req.descompuestos],
     )
 
     result = pipeline.run(req)
@@ -112,6 +118,11 @@ def main() -> int:
             "source_sha256": meta_sha,
             "model": settings.openai_model,
             "processed_at_utc": _utc_iso(),
+            "context": {
+                "llm_batch_size": req.llm_batch_size,
+                "descompuestos_count": len(req.descompuestos),
+                "ids": [item.id for item in req.descompuestos],
+            },
         },
         "data": result.model_dump(),
     }

@@ -125,12 +125,37 @@ class Bc3ClasificacionResultado(BaseModel):
     resultados: List[Bc3ClasificacionItem] = Field(default_factory=list)
 
 
+class Bc3ClasificacionDetalladaItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    codigo_bc3: Optional[str] = None
+    descripcion_entrada: Optional[str] = None
+    tipo: Bc3TipoClasificacion = "INDETERMINADO"
+    codigo_interno: str
+    descripcion_catalogo: Optional[str] = None
+    descripcion_catalogo_completa: Optional[str] = None
+    confianza_pct: Optional[float] = Field(default=0.0, ge=0, le=100)
+
+
+class Bc3ClasificacionDetalladaResultado(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    resultados: List[Bc3ClasificacionDetalladaItem] = Field(default_factory=list)
+
+
 class Bc3ClassificationRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     prompt_key: str = "bc3_clasificador_es"
     bc3_id: Optional[str] = None
     top_k_candidates: int = Field(default=20, ge=1, le=200)
+    llm_batch_size: int = Field(
+        default=5,
+        ge=1,
+        le=50,
+        validation_alias=AliasChoices("llm_batch_size", "batch_size"),
+    )
 
     catalog_xlsx_path: Optional[str] = None
     catalog_sheet: Optional[str] = None

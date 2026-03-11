@@ -8,31 +8,29 @@ import mimetypes
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
 
-from config.settings import Settings
-from infrastructure.prompts.yaml_prompt_repository import YamlPromptRepository
-from infrastructure.llm.openai_responses_client import OpenAIResponsesVisionClient
-from application.services.schema_registry import SchemaRegistry
-from application.services.prompted_extraction_service import PromptedExtractionService
-from domain.models.llm_attachment import LlmAttachment
-
-# BC3
-from interface_adapters.api.bc3_models import Bc3ClassifyApiRequest
-from domain.models.bc3_classification_models import Bc3ClassificationRequest
-from application.services.catalog_candidate_selector import CatalogCandidateSelector
 from application.pipelines.bc3_classification_pipeline import Bc3ClassificationPipeline
+from application.services.catalog_candidate_selector import CatalogCandidateSelector
+from application.services.prompted_extraction_service import PromptedExtractionService
 from application.services.prompted_text_extraction_service import PromptedTextExtractionService
-from infrastructure.llm.openai_responses_text_client import OpenAIResponsesTextClient
+from application.services.schema_registry import SchemaRegistry
+from config.settings import Settings
+from domain.models.bc3_classification_models import Bc3ClassificationRequest
+from domain.models.llm_attachment import LlmAttachment
 from infrastructure.catalog.product_catalog_cache import ProductCatalogCache
+from infrastructure.llm.openai_responses_client import OpenAIResponsesVisionClient
+from infrastructure.llm.openai_responses_text_client import OpenAIResponsesTextClient
+from infrastructure.prompts.yaml_prompt_repository import YamlPromptRepository
+from interface_adapters.api.bc3_models import Bc3ClassifyApiRequest
 
 logger = logging.getLogger(__name__)
 
 
 def _parse_origins(value: str) -> List[str]:
-    return [o.strip() for o in (value or "").split(",") if o.strip()]
+    return [item.strip() for item in (value or "").split(",") if item.strip()]
 
 
 def _utc_iso() -> str:
@@ -53,9 +51,6 @@ def build_app(settings: Settings) -> FastAPI:
     prompt_repo = YamlPromptRepository(settings.prompts_yaml_path)
     schema_registry = SchemaRegistry()
 
-    # ---------------------------
-    # OCR / Vision extractor
-    # ---------------------------
     llm_vision = OpenAIResponsesVisionClient(api_key=settings.openai_api_key)
     extractor_vision = PromptedExtractionService(
         llm_client=llm_vision,
@@ -64,9 +59,6 @@ def build_app(settings: Settings) -> FastAPI:
         model=settings.openai_model,
     )
 
-    # ---------------------------
-    # BC3 / Text extractor
-    # ---------------------------
     llm_text = OpenAIResponsesTextClient(api_key=settings.openai_api_key)
     extractor_text = PromptedTextExtractionService(
         llm_client=llm_text,
@@ -79,10 +71,9 @@ def build_app(settings: Settings) -> FastAPI:
         extractor=extractor_text,
         selector=CatalogCandidateSelector(),
     )
-
     catalog_cache = ProductCatalogCache()
 
-    app = FastAPI(title="OCR + BC3 Classifier Service", version="0.4.0")
+    app = FastAPI(title="OCR + BC3 Classifier Service", version="0.6.0")
 
     if settings.cors_allow_origins:
         origins = _parse_origins(settings.cors_allow_origins)
@@ -100,9 +91,6 @@ def build_app(settings: Settings) -> FastAPI:
     def health() -> Dict[str, Any]:
         return {"ok": True}
 
-    # ---------------------------------------------------------
-    # OCR: /v1/extract
-    # ---------------------------------------------------------
     @app.post("/v1/extract")
     async def extract(
         prompt_key: str = Form(...),
@@ -133,7 +121,10 @@ def build_app(settings: Settings) -> FastAPI:
                 data=data,
             )
 
-        parsed, schema_name = extractor_vision.extract(prompt_key=prompt_key, attachment=attachment)
+        parsed, schema_name = extractor_vision.extract(
+            prompt_key=prompt_key,
+            attachment=attachment,
+        )
         sha256 = hashlib.sha256(data).hexdigest()
 
         return {
@@ -148,9 +139,6 @@ def build_app(settings: Settings) -> FastAPI:
             "data": parsed.model_dump(),
         }
 
-    # ---------------------------------------------------------
-    # BC3: cache helpers (opcional pero útil)
-    # ---------------------------------------------------------
     @app.get("/v1/bc3/catalog/cache")
     def bc3_catalog_cache_list() -> Dict[str, Any]:
         return {"ok": True, "cache": catalog_cache.list_cache()}
@@ -160,34 +148,19 @@ def build_app(settings: Settings) -> FastAPI:
         catalog_cache.clear()
         return {"ok": True}
 
-    # ---------------------------------------------------------
-    # BC3: clasificación
-    # ---------------------------------------------------------
     @app.post("/v1/bc3/classify")
     def bc3_classify(req_dict: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        API para programa externo.
-
-        Body:
-        - prompt_key, bc3_id, descompuestos[], top_k_candidates?
-        - Y catálogo:
-          A) catalogo[] (opcional)
-          B) catalog_xlsx_path (+ catalog_sheet opcional)
-
-        Respuesta:
-        - envelope: { meta: {...}, data: {resultados:[...]} }
-        """
         try:
             api_req = Bc3ClassifyApiRequest.model_validate(req_dict)
-        except ValidationError as e:
-            raise HTTPException(status_code=400, detail=e.errors()) from e
+        except ValidationError as exc:
+            raise HTTPException(status_code=400, detail=exc.errors()) from exc
 
         if not api_req.descompuestos:
             raise HTTPException(status_code=400, detail="descompuestos[] está vacío.")
 
         top_k = api_req.top_k_candidates or settings.bc3_default_top_k
+        llm_batch_size = api_req.llm_batch_size or settings.bc3_llm_batch_size
 
-        # Resolver catálogo
         if api_req.catalogo:
             catalogo = api_req.catalogo
             catalog_source = {"mode": "inline", "path": None, "sheet": None}
@@ -210,7 +183,11 @@ def build_app(settings: Settings) -> FastAPI:
             except Exception as exc:
                 raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-            catalog_source = {"mode": "xlsx_path", "path": path, "sheet": api_req.catalog_sheet}
+            catalog_source = {
+                "mode": "xlsx_path",
+                "path": path,
+                "sheet": api_req.catalog_sheet,
+            }
 
         domain_req = Bc3ClassificationRequest(
             prompt_key=api_req.prompt_key,
@@ -218,6 +195,7 @@ def build_app(settings: Settings) -> FastAPI:
             descompuestos=api_req.descompuestos,
             catalogo=catalogo,
             top_k_candidates=top_k,
+            llm_batch_size=llm_batch_size,
         )
 
         try:
@@ -226,17 +204,20 @@ def build_app(settings: Settings) -> FastAPI:
             logger.exception("Error BC3 classify")
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-        # Hash estable sin meter el catálogo completo (solo su origen)
         sha_payload = {
             "prompt_key": api_req.prompt_key,
             "bc3_id": api_req.bc3_id,
             "top_k_candidates": top_k,
-            "descompuestos": [d.model_dump(exclude_none=True) for d in api_req.descompuestos],
+            "llm_batch_size": llm_batch_size,
+            "descompuestos": [
+                item.model_dump(exclude_none=True)
+                for item in api_req.descompuestos
+            ],
             "catalog_source": catalog_source,
         }
         source_sha256 = _sha256_obj(sha_payload)
 
-        envelope = {
+        return {
             "meta": {
                 "prompt_key": api_req.prompt_key,
                 "schema": "bc3_clasificacion_resultado",
@@ -247,10 +228,11 @@ def build_app(settings: Settings) -> FastAPI:
                 "processed_at_utc": _utc_iso(),
                 "context": {
                     "catalog_source": catalog_source,
+                    "llm_batch_size": llm_batch_size,
+                    "descompuestos_count": len(api_req.descompuestos),
                 },
             },
             "data": result.model_dump(),
         }
-        return envelope
 
     return app

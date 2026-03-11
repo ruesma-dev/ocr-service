@@ -27,6 +27,7 @@ class Bc3ClassifyApiRequest(BaseModel):
     descompuestos: List[Bc3DescompuestoInput] = Field(default_factory=list)
 
     top_k_candidates: Optional[int] = Field(default=None, ge=3, le=60)
+    llm_batch_size: Optional[int] = Field(default=None, ge=1, le=50)
 
     catalogo: List[Bc3CatalogoItem] = Field(default_factory=list)
     catalog_xlsx_path: Optional[str] = None

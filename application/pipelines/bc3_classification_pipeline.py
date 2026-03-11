@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import re
 import unicodedata
-from typing import Iterable, List
+from typing import Iterable, Iterator, List, Sequence
 
 from application.services.catalog_candidate_selector import CatalogCandidateSelector
 from application.services.prompted_text_extraction_service import (
@@ -12,6 +12,8 @@ from application.services.prompted_text_extraction_service import (
 )
 from domain.models.bc3_classification_models import (
     Bc3CatalogoItem,
+    Bc3ClasificacionDetalladaItem,
+    Bc3ClasificacionDetalladaResultado,
     Bc3ClasificacionItem,
     Bc3ClasificacionResultado,
     Bc3ClassificationRequest,
@@ -37,13 +39,15 @@ _ALLOWED_TIPOS = {
 
 class Bc3ClassificationPipeline:
     """
-    Pipeline BC3 con garantía de contrato de salida:
-    - siempre genera candidatos;
-    - intenta clasificar con LLM;
-    - si el LLM falla, devuelve un resultado determinista basado en el
-      mejor candidato preseleccionado;
-    - al final vuelve a validar el contrato: un resultado por id y
-      siempre un codigo_interno perteneciente a los candidatos del item.
+    Pipeline BC3 con batching interno para el LLM.
+
+    Contrato:
+    - recibe una lista de descompuestos;
+    - genera candidatos de catálogo para cada uno;
+    - envía al LLM en lotes de `llm_batch_size`;
+    - si el LLM falla, aplica fallback determinista;
+    - siempre devuelve un código;
+    - enriquece la salida con descripción de entrada y del catálogo.
     """
 
     def __init__(
@@ -57,32 +61,87 @@ class Bc3ClassificationPipeline:
         self._selector = selector
         self._catalog_loader = catalog_loader or ProductCatalogLoader()
 
-    def run(self, req: Bc3ClassificationRequest) -> Bc3ClasificacionResultado:
+    def run(
+        self,
+        req: Bc3ClassificationRequest,
+    ) -> Bc3ClasificacionDetalladaResultado:
         catalogo = self._resolve_catalog(req)
+        prompt_payload = self._build_prompt_payload(req=req, catalogo=catalogo)
 
-        payload = self._build_prompt_payload(
-            req=req,
-            catalogo=catalogo,
+        batch_size = max(1, int(req.llm_batch_size or len(prompt_payload.descompuestos)))
+        total_items = len(prompt_payload.descompuestos)
+        total_batches = max(1, (total_items + batch_size - 1) // batch_size)
+
+        logger.info(
+            "BC3 clasificación por lotes. total_descompuestos=%s llm_batch_size=%s total_batches=%s",
+            total_items,
+            batch_size,
+            total_batches,
         )
 
+        detailed_items: list[Bc3ClasificacionDetalladaItem] = []
+
+        for batch_index, batch_items in enumerate(
+            self._chunk_prompt_items(prompt_payload.descompuestos, batch_size),
+            start=1,
+        ):
+            batch_payload = Bc3PromptPayload(
+                bc3_id=prompt_payload.bc3_id,
+                descompuestos=batch_items,
+                reglas=prompt_payload.reglas,
+            )
+
+            logger.info(
+                "BC3 lote %s/%s. items=%s ids=%s",
+                batch_index,
+                total_batches,
+                len(batch_items),
+                [item.id for item in batch_items],
+            )
+
+            batch_raw_result = self._execute_llm_batch(
+                prompt_key=req.prompt_key,
+                batch_payload=batch_payload,
+                batch_index=batch_index,
+                total_batches=total_batches,
+            )
+
+            batch_safe_result = self._enforce_output_contract(
+                prompt_payload=batch_payload,
+                raw_result=batch_raw_result,
+            )
+            batch_detailed_result = self._enrich_batch_result(
+                prompt_payload=batch_payload,
+                safe_result=batch_safe_result,
+            )
+            detailed_items.extend(batch_detailed_result.resultados)
+
+        return Bc3ClasificacionDetalladaResultado(resultados=detailed_items)
+
+    def _execute_llm_batch(
+        self,
+        *,
+        prompt_key: str,
+        batch_payload: Bc3PromptPayload,
+        batch_index: int,
+        total_batches: int,
+    ) -> Bc3ClasificacionResultado:
         try:
             parsed, _schema_name = self._extractor.extract(
-                prompt_key=req.prompt_key,
-                payload=payload.model_dump(exclude_none=True),
+                prompt_key=prompt_key,
+                payload=batch_payload.model_dump(exclude_none=True),
             )
-            result = Bc3ClasificacionResultado.model_validate(parsed)
+            return Bc3ClasificacionResultado.model_validate(parsed)
         except Exception as exc:
             logger.exception(
-                "Fallo en clasificación BC3 con LLM. "
-                "Se aplicará fallback determinista. error=%s",
+                "Fallo en clasificación BC3 con LLM para lote %s/%s. "
+                "Se aplicará fallback determinista. ids=%s error=%s",
+                batch_index,
+                total_batches,
+                [item.id for item in batch_payload.descompuestos],
                 exc,
             )
-            return self._build_fallback_result(payload)
-
-        return self._enforce_output_contract(
-            prompt_payload=payload,
-            raw_result=result,
-        )
+            return self._build_fallback_result(batch_payload)
 
     def _resolve_catalog(
         self,
@@ -116,8 +175,7 @@ class Bc3ClassificationPipeline:
 
             if not candidatos:
                 raise ValueError(
-                    f"No se han generado candidatos para el descompuesto "
-                    f"'{descompuesto.id}'."
+                    f"No se han generado candidatos para el descompuesto '{descompuesto.id}'."
                 )
 
             logger.debug(
@@ -179,6 +237,15 @@ class Bc3ClassificationPipeline:
 
         return " | ".join(fragments)
 
+    @staticmethod
+    def _chunk_prompt_items(
+        items: Sequence[Bc3PromptDescompuesto],
+        chunk_size: int,
+    ) -> Iterator[list[Bc3PromptDescompuesto]]:
+        size = max(1, int(chunk_size))
+        for start in range(0, len(items), size):
+            yield list(items[start:start + size])
+
     def _build_fallback_result(
         self,
         prompt_payload: Bc3PromptPayload,
@@ -224,7 +291,6 @@ class Bc3ClassificationPipeline:
             current = result_by_id.get(prompt_item.id)
             best_candidate = self._pick_best_candidate(prompt_item.candidatos)
 
-            codigo_interno = None
             if current and current.codigo_interno in allowed_codes:
                 codigo_interno = current.codigo_interno
             else:
@@ -250,6 +316,54 @@ class Bc3ClassificationPipeline:
             )
 
         return Bc3ClasificacionResultado(resultados=fixed_items)
+
+    def _enrich_batch_result(
+        self,
+        *,
+        prompt_payload: Bc3PromptPayload,
+        safe_result: Bc3ClasificacionResultado,
+    ) -> Bc3ClasificacionDetalladaResultado:
+        prompt_by_id = {
+            prompt_item.id: prompt_item
+            for prompt_item in prompt_payload.descompuestos
+        }
+
+        detailed_items: list[Bc3ClasificacionDetalladaItem] = []
+        for result_item in safe_result.resultados:
+            prompt_item = prompt_by_id[result_item.id]
+            selected_candidate = self._pick_candidate_by_code(
+                candidates=prompt_item.candidatos,
+                codigo=result_item.codigo_interno,
+            )
+
+            detailed_items.append(
+                Bc3ClasificacionDetalladaItem(
+                    id=result_item.id,
+                    codigo_bc3=prompt_item.codigo_bc3,
+                    descripcion_entrada=prompt_item.descripcion,
+                    tipo=result_item.tipo,
+                    codigo_interno=selected_candidate.codigo,
+                    descripcion_catalogo=(
+                        selected_candidate.descripcion_producto
+                        or selected_candidate.descripcion_completa
+                    ),
+                    descripcion_catalogo_completa=selected_candidate.descripcion_completa,
+                    confianza_pct=result_item.confianza_pct,
+                )
+            )
+
+        return Bc3ClasificacionDetalladaResultado(resultados=detailed_items)
+
+    @staticmethod
+    def _pick_candidate_by_code(
+        *,
+        candidates: List[Bc3PromptCandidate],
+        codigo: str | None,
+    ) -> Bc3PromptCandidate:
+        for candidate in candidates:
+            if candidate.codigo == codigo:
+                return candidate
+        return Bc3ClassificationPipeline._pick_best_candidate(candidates)
 
     @staticmethod
     def _pick_best_candidate(

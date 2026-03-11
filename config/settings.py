@@ -40,8 +40,8 @@ class Settings(BaseSettings):
     )
 
     bc3_default_top_k: int = Field(25, alias="BC3_TOP_K_CANDIDATES")
+    bc3_llm_batch_size: int = Field(5, alias="BC3_LLM_BATCH_SIZE")
 
-    # --- BC3 testing/debug ---
     bc3_ingestor_json_path: str = Field(
         "input/request.json",
         alias="BC3_INGESTOR_JSON_PATH",
@@ -50,14 +50,8 @@ class Settings(BaseSettings):
         "output/bc3_result.json",
         alias="BC3_TEST_OUTPUT_JSON_PATH",
     )
-    bc3_io_dump_enabled: bool = Field(
-        False,
-        alias="BC3_IO_DUMP_ENABLED",
-    )
-    bc3_io_dump_dir: str = Field(
-        "logs/bc3_io",
-        alias="BC3_IO_DUMP_DIR",
-    )
+    bc3_io_dump_enabled: bool = Field(False, alias="BC3_IO_DUMP_ENABLED")
+    bc3_io_dump_dir: str = Field("logs/bc3_io", alias="BC3_IO_DUMP_DIR")
 
     class Config:
         env_file = ".env"

@@ -78,7 +78,9 @@ residuos_planta_es:
     - certificado_numero: "Certificado Nº", "Certificado nº", "Certificado N°", etc. (si existe). es posible ue entre el numero de serie y el codigo numerico haya algo de separacion en el texto, si el codigo no tiene parte numerica, busca en la misma linea la parte numerica
     - anexo: detecta si el certificado indica "Anejo II", "Anejo II.1", o construcciones similares. 
     - fecha_documento: fecha principal del certificado ("Fecha:")
-    - periodo_inicio y periodo_fin: si aparece rango tipo "PERIODO: dd/mm/aa a dd/mm/aa" o "01/08/2025 - 31/08/2025"
+    - periodo_inicio y periodo_fin: Es el periodo que puede aparece de diferentes maneras que te detallo a continuacion, no son las unicas formas, son guias para que busques aptrones similares.
+      * Nombrado total o parcialmente como PERIODO, PERIODO DE ENTREGA, PERIODO DE DESCARGA, FECHA (siempre que tenga un rango de fechas despues, y no una fecha unica): dd/mm/aa a dd/mm/aa" o "01/08/2025 - 31/08/2025 o dd/mm/aa - dd/mm/aa". 
+      * la fecha puede formato rango dd/mm/aa a dd/mm/aa" o "01/08/2025 - 31/08/2025 o dd/mm/aa - dd/mm/aa o FB de 2026, donde FB es el mes (febrero). aqui tienes que devolver el inicio y fin del mes como periodo_inicio y periodo_fin.
 
     OBRA / ORIGEN:
     - obra: denominación de la obra/centro de trabajo/origen

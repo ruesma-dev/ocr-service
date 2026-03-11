@@ -46,6 +46,12 @@ def _parse_args() -> argparse.Namespace:
         default="output/bc3_test_result.json",
         help="Ruta al JSON de salida",
     )
+    parser.add_argument(
+        "--llm-batch-size",
+        type=int,
+        default=None,
+        help="Tamaño de lote interno para llamadas al LLM",
+    )
     return parser.parse_args()
 
 
@@ -64,12 +70,16 @@ def main() -> int:
     payload = _read_json(request_path)
     req = Bc3ClassificationRequest.model_validate(payload)
 
+    effective_batch_size = int(args.llm_batch_size or req.llm_batch_size or settings.bc3_llm_batch_size)
+    req = req.model_copy(update={"llm_batch_size": effective_batch_size})
+
     catalog_loader = ProductCatalogLoader()
     catalogo = catalog_loader.load_from_request(req)
     logger.info(
-        "Catálogo cargado: filas=%s primeros_codigos=%s",
+        "Catálogo cargado: filas=%s primeros_codigos=%s llm_batch_size=%s",
         len(catalogo),
         [item.codigo for item in catalogo[:5]],
+        req.llm_batch_size,
     )
 
     req = req.model_copy(update={"catalogo": catalogo})
@@ -105,6 +115,10 @@ def main() -> int:
             "source_mime_type": "application/json",
             "model": settings.openai_model,
             "processed_at_utc": _utc_iso(),
+            "context": {
+                "llm_batch_size": req.llm_batch_size,
+                "descompuestos_count": len(req.descompuestos),
+            },
         },
         "data": result.model_dump(),
     }
