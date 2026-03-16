@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import List, Literal, Optional
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 Bc3TipoClasificacion = Literal[
     "SUMINISTRO",
@@ -17,44 +17,19 @@ Bc3TipoClasificacion = Literal[
 
 
 class Bc3CatalogoItem(BaseModel):
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+    """
+    Modelo de catálogo interno.
 
-    codigo: str = Field(
-        ...,
-        validation_alias=AliasChoices("codigo", "code", "Codigo producto"),
-    )
-    descripcion_completa: str = Field(
-        default="",
-        validation_alias=AliasChoices(
-            "descripcion_completa",
-            "desc",
-            "Descripcion Completa",
-        ),
-    )
-    descripcion_producto: str = Field(
-        default="",
-        validation_alias=AliasChoices(
-            "descripcion_producto",
-            "product",
-            "Descripcion producto",
-        ),
-    )
-    descripcion_familia: str = Field(
-        default="",
-        validation_alias=AliasChoices(
-            "descripcion_familia",
-            "family",
-            "Descripcion familia",
-        ),
-    )
-    descripcion_grupo: str = Field(
-        default="",
-        validation_alias=AliasChoices(
-            "descripcion_grupo",
-            "group",
-            "Descripcion grupo",
-        ),
-    )
+    Se mantiene compatible con el selector heredado y con el nuevo catálogo YAML.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    codigo: str
+    descripcion_completa: str = ""
+    descripcion_producto: str = ""
+    descripcion_familia: str = ""
+    descripcion_grupo: str = ""
 
     def search_text(self) -> str:
         return " | ".join(
@@ -79,14 +54,29 @@ class Bc3DescompuestoInput(BaseModel):
     unidad: Optional[str] = None
 
 
+class Bc3Descompuesto(Bc3DescompuestoInput):
+    """
+    Alias retrocompatible con código heredado de la API/GUI.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+
 class Bc3PromptCandidate(BaseModel):
+    """
+    Candidato devuelto por el preselector local.
+
+    Se conserva para no romper `CatalogCandidateSelector`, aunque el nuevo enfoque
+    ya no lo use como táctica principal de prompting.
+    """
+
     model_config = ConfigDict(extra="ignore")
 
     codigo: str
-    descripcion_grupo: str
-    descripcion_familia: str
-    descripcion_producto: str
-    descripcion_completa: str
+    descripcion_grupo: str = ""
+    descripcion_familia: str = ""
+    descripcion_producto: str = ""
+    descripcion_completa: str = ""
     tags: List[str] = Field(default_factory=list)
     score: float = 0.0
 
@@ -98,7 +88,7 @@ class Bc3PromptDescompuesto(BaseModel):
     codigo_bc3: str
     unidad: Optional[str] = None
     descripcion: str
-    contexto: str
+    contexto: str = ""
     candidatos: List[Bc3PromptCandidate] = Field(default_factory=list)
 
 
@@ -114,9 +104,22 @@ class Bc3ClasificacionItem(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: str
+    codigo_bc3: Optional[str] = None
+    descripcion_entrada: Optional[str] = None
+
     tipo: Bc3TipoClasificacion = "INDETERMINADO"
     codigo_interno: Optional[str] = None
     confianza_pct: Optional[float] = Field(default=0.0, ge=0, le=100)
+
+    descripcion_catalogo: Optional[str] = None
+    familia_catalogo: Optional[str] = None
+    grupo_catalogo: Optional[str] = None
+
+    # Metadatos de depuración / trazabilidad de confianza
+    confidence_source: Optional[str] = None
+    confianza_modelo_pct: Optional[float] = Field(default=None, ge=0, le=100)
+    selector_rank: Optional[int] = Field(default=None, ge=1)
+    selector_score: Optional[float] = None
 
 
 class Bc3ClasificacionResultado(BaseModel):
@@ -125,55 +128,18 @@ class Bc3ClasificacionResultado(BaseModel):
     resultados: List[Bc3ClasificacionItem] = Field(default_factory=list)
 
 
-class Bc3ClasificacionDetalladaItem(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    id: str
-    codigo_bc3: Optional[str] = None
-    descripcion_entrada: Optional[str] = None
-    tipo: Bc3TipoClasificacion = "INDETERMINADO"
-    codigo_interno: str
-    descripcion_catalogo: Optional[str] = None
-    descripcion_catalogo_completa: Optional[str] = None
-    confianza_pct: Optional[float] = Field(default=0.0, ge=0, le=100)
-
-
-class Bc3ClasificacionDetalladaResultado(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    resultados: List[Bc3ClasificacionDetalladaItem] = Field(default_factory=list)
-
-
 class Bc3ClassificationRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     prompt_key: str = "bc3_clasificador_es"
     bc3_id: Optional[str] = None
     top_k_candidates: int = Field(default=20, ge=1, le=200)
-    llm_batch_size: int = Field(
-        default=5,
-        ge=1,
-        le=50,
-        validation_alias=AliasChoices("llm_batch_size", "batch_size"),
-    )
-
-    catalog_xlsx_path: Optional[str] = None
-    catalog_sheet: Optional[str] = None
-    catalogo: Optional[List[Bc3CatalogoItem]] = None
+    llm_batch_size: int = Field(default=5, ge=1, le=100)
 
     descompuestos: List[Bc3DescompuestoInput] = Field(default_factory=list)
 
     @model_validator(mode="after")
-    def validate_catalog_source(self) -> "Bc3ClassificationRequest":
-        has_embedded = bool(self.catalogo)
-        has_xlsx = bool((self.catalog_xlsx_path or "").strip())
-
-        if not has_embedded and not has_xlsx:
-            raise ValueError(
-                "Debes informar 'catalog_xlsx_path' o 'catalogo' embebido en el request."
-            )
-
+    def validate_payload(self) -> "Bc3ClassificationRequest":
         if not self.descompuestos:
             raise ValueError("El request BC3 debe incluir al menos un descompuesto.")
-
         return self

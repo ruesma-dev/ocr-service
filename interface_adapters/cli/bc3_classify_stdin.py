@@ -18,7 +18,9 @@ from application.services.schema_registry import SchemaRegistry
 from config.logging_config import configure_logging
 from config.settings import Settings
 from domain.models.bc3_classification_models import Bc3ClassificationRequest
-from infrastructure.catalog.product_catalog_loader import ProductCatalogLoader
+from infrastructure.catalog.compact_catalog_yaml_repository import (
+    CompactCatalogYamlRepository,
+)
 from infrastructure.llm.openai_responses_text_client import OpenAIResponsesTextClient
 from infrastructure.prompts.yaml_prompt_repository import YamlPromptRepository
 
@@ -78,6 +80,7 @@ def main() -> int:
 
     prompt_repo = YamlPromptRepository(settings.prompts_yaml_path)
     schema_registry = SchemaRegistry()
+    catalog_repo = CompactCatalogYamlRepository(settings.bc3_catalog_yaml_path)
 
     llm_text = OpenAIResponsesTextClient(api_key=settings.openai_api_key)
     extractor_text = PromptedTextExtractionService(
@@ -90,18 +93,20 @@ def main() -> int:
     pipeline = Bc3ClassificationPipeline(
         extractor=extractor_text,
         selector=CatalogCandidateSelector(),
-        catalog_loader=ProductCatalogLoader(),
+        catalog_repository=catalog_repo,
+        prompt_cache_enabled=settings.bc3_use_prompt_cache,
+        prompt_cache_key_prefix=settings.bc3_prompt_cache_key_prefix,
+        prompt_cache_retention=settings.bc3_prompt_cache_retention,
     )
 
     logger.info(
-        "CLI bc3 classify. prompt_key=%s model=%s bc3_id=%s descompuestos=%s "
-        "catalog_source=%s top_k=%s llm_batch_size=%s ids=%s",
+        "CLI bc3 classify. prompt_key=%s model=%s bc3_id=%s descompuestos=%s catalog_yaml=%s "
+        "llm_batch_size=%s ids=%s",
         req.prompt_key,
         settings.openai_model,
         req.bc3_id,
         len(req.descompuestos),
-        "embedded" if req.catalogo else req.catalog_xlsx_path,
-        req.top_k_candidates,
+        settings.bc3_catalog_yaml_path,
         req.llm_batch_size,
         [item.id for item in req.descompuestos],
     )
@@ -122,6 +127,9 @@ def main() -> int:
                 "llm_batch_size": req.llm_batch_size,
                 "descompuestos_count": len(req.descompuestos),
                 "ids": [item.id for item in req.descompuestos],
+                "catalog_yaml_path": settings.bc3_catalog_yaml_path,
+                "prompt_cache_enabled": settings.bc3_use_prompt_cache,
+                "prompt_cache_retention": settings.bc3_prompt_cache_retention,
             },
         },
         "data": result.model_dump(),

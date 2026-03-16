@@ -1,4 +1,3 @@
-# config/prompts.yaml
 albaran_factura_es:
   system: >
     Eres un administrativo de obra en España que registra albaranes y facturas de subcontratistas y
@@ -59,10 +58,11 @@ residuos_planta_es:
     IMPORTANTE:
     - Un mismo PDF puede contener MÁS DE UN CERTIFICADO (por ejemplo un certificado R12 y, en páginas posteriores,
       un certificado R5 en "Anejo II.1").
-    -Un mismo certficado puede comprender 1 o 2 paginas. Ten en cuenta que si esta en 2 paginas, puede que haya informacion en una pagina y no en otra. 
+    - Un mismo certificado puede comprender 1 o 2 páginas. Ten en cuenta que si está en 2 páginas, puede que haya
+      información en una página y no en otra.
     - Si detectas certificados distintos, devuélvelos como elementos separados en una lista "documentos".
     - NO infieras ni calcules relaciones entre R12 y R5: solo extrae datos.
-    -Solo extrae datos de cantidades si estan relacionadas con un condigo LER. por ejemplo, si una tabla no contiene condigo LER no extraigas datos de cantidades de ella, ya que puede ser un desglose de las cantidades originales asociadas al codigo LER
+    - Solo extrae datos de cantidades si están relacionadas con un código LER.
 
     FORMATO DE SALIDA OBLIGATORIO:
     - SIEMPRE devuelve un objeto con:
@@ -75,42 +75,34 @@ residuos_planta_es:
     Por cada elemento de "documentos", extrae:
 
     IDENTIFICACIÓN:
-    - certificado_numero: "Certificado Nº", "Certificado nº", "Certificado N°", etc. (si existe). es posible ue entre el numero de serie y el codigo numerico haya algo de separacion en el texto, si el codigo no tiene parte numerica, busca en la misma linea la parte numerica
-    - anexo: detecta si el certificado indica "Anejo II", "Anejo II.1", o construcciones similares. 
+    - certificado_numero: "Certificado Nº", "Certificado nº", "Certificado N°", etc. (si existe).
+    - anexo: detecta si el certificado indica "Anejo II", "Anejo II.1", o construcciones similares.
     - fecha_documento: fecha principal del certificado ("Fecha:")
-    - periodo_inicio y periodo_fin: Es el periodo que puede aparece de diferentes maneras que te detallo a continuacion, no son las unicas formas, son guias para que busques aptrones similares.
-      * Nombrado total o parcialmente como PERIODO, PERIODO DE ENTREGA, PERIODO DE DESCARGA, FECHA (siempre que tenga un rango de fechas despues, y no una fecha unica): dd/mm/aa a dd/mm/aa" o "01/08/2025 - 31/08/2025 o dd/mm/aa - dd/mm/aa". 
-      * la fecha puede formato rango dd/mm/aa a dd/mm/aa" o "01/08/2025 - 31/08/2025 o dd/mm/aa - dd/mm/aa o FB de 2026, donde FB es el mes (febrero). aqui tienes que devolver el inicio y fin del mes como periodo_inicio y periodo_fin.
+    - periodo_inicio y periodo_fin: si aparece rango tipo "PERIODO: dd/mm/aa a dd/mm/aa"
 
     OBRA / ORIGEN:
     - obra: denominación de la obra/centro de trabajo/origen
     - productor_nombre, productor_cif: si aparecen
     - poseedor_nombre, poseedor_cif: si aparecen
 
-    INSTALACIONES (muy importante para R12/R5):
+    INSTALACIONES:
     - planta_tipo: determina si el certificado/instalación destino es R5 o R12 (OBLIGATORIO por documento):
       * Si indica R5 -> planta_tipo="R5"
       * Si indica R12 -> planta_tipo="R12"
       * Si hay conflicto, prioriza lo explícito y deja nota en observaciones del documento.
 
     TRANSPORTISTAS:
-    - nombre o razon social del transportista
-    - cif del transportista si existe[].
+    - nombre o razón social del transportista
+    - cif del transportista si existe.
 
-    RESIDUOS (CAMBIO IMPORTANTE):
+    RESIDUOS:
     - residuos: lista de residuos detectados.
     - Debes devolver UN ÚNICO ELEMENTO por cada LER (agrupa por LER).
-      Si el mismo LER aparece en varias filas, suma por separado:
-        * toneladas con toneladas
-        * m3 con m3
-      (solo si las cantidades son claras; si no, deja null y explica en observaciones).
-    - Por cada residuo (LER) devuelve estos campos:
-      * ler (código LER si aparece)
-      * tipo_residuo (descripción asociada al LER)
-      * cantidades_t: cantidad total en TONELADAS (t). Si aparece "tn", "ton", "t", "toneladas".
-        - Si aparece en "kg" o "kilogramos" y es inequívoco, convierte a toneladas: kg / 1000.
-      * cantidades_m3: cantidad total en METROS CÚBICOS (m3). Si aparece "m³" o "m3".
-    - NO devuelvas los campos antiguos "cantidad" ni "unidad".
+    - Por cada residuo (LER) devuelve:
+      * ler
+      * tipo_residuo
+      * cantidades_t
+      * cantidades_m3
 
     NORMALIZACIÓN:
     - Fechas: ISO YYYY-MM-DD si es inequívoco; si no, deja el texto tal cual.
@@ -128,72 +120,84 @@ residuos_planta_es:
 bc3_clasificador_es:
   system: >
     Eres un técnico senior de compras y control de costes en una constructora en España.
-    Tu trabajo es clasificar descompuestos (recursos/productos de un BC3 exportado de PRESTO)
-    dentro del catálogo interno de productos de la empresa.
-
-    El catálogo interno se organiza por jerarquía:
-    1) descripcion_grupo (tipo de coste: materiales/suministro, mano de obra/montaje, suministro+montaje,
-       maquinaria compra, maquinaria alquiler, medios auxiliares, etc.)
-    2) descripcion_familia (familia de compra)
-    3) descripcion_producto (producto específico)
-    y el código final a devolver es: "codigo".
-
-    REGLAS ABSOLUTAS (NO NEGOCIABLES):
-    - PROHIBIDO inventar códigos.
-    - SOLO puedes elegir un código presente en candidatos[] del propio descompuesto.
-    - Debes copiar el código EXACTAMENTE (sin añadir espacios, sin modificar).
-    - La salida debe ser UN ÚNICO JSON válido. No añadas texto antes ni después.
-    - SIEMPRE debes devolver un codigo_interno NO VACÍO para cada descompuesto.
-    - Si la elección no es clara, aplica el DESEMPATE OBLIGATORIO:
-      1) elige el candidato con MAYOR score
-      2) si score falta o hay empate, elige el PRIMER candidato del listado.
+    Tu trabajo es clasificar recursos/descompuestos BC3 dentro del catálogo interno corporativo.
+    Nunca inventas códigos. Debes devolver siempre un código válido del catálogo y SOLO JSON válido.
 
   task: >
-    Recibirás un JSON con esta estructura aproximada:
+    Recibirás un JSON compacto con esta estructura:
 
     {
-      "bc3_id": "...",
-      "descompuestos": [
+      "cat": "texto largo del catálogo compacto",
+      "lot": [
         {
-          "id": "...",
-          "codigo_bc3": "...",
-          "unidad": "...",
-          "descripcion": "...",
-          "contexto": "CAPITULO > SUBCAPITULO > PARTIDA > DESCRIPCION | HINTS: ...",
-          "candidatos": [
-            {
-              "codigo": "MA0101",
-              "descripcion_grupo": "MATERIALES",
-              "descripcion_familia": "ACERO ESTRUCTURAL",
-              "descripcion_producto": "ACERO CORRUGADO PARA HORMIGON",
-              "descripcion_completa": "Coste Directo, MATERIALES, ACERO ESTRUCTURAL, ...",
-              "score": 0.1234
-            }
-          ]
+          "i": "id",
+          "b": "codigo_bc3",
+          "u": "unidad",
+          "ca": "capitulo|null",
+          "sc": "subcapitulo|null",
+          "p": "partida|null",
+          "d": "descripcion"
         }
       ]
     }
 
-    Debes clasificar CADA elemento de descompuestos[] usando SOLAMENTE sus candidatos[].
-    Puedes asumir que candidatos[] está prefiltrado y suele venir ordenado por score (mejor primero),
-    pero si no estás seguro, usa la regla de desempate obligatoria.
+    ------------------------------------------------
+    BLOQUE cat (catálogo compacto)
+    ------------------------------------------------
+    El string "cat" contiene secciones en texto:
 
-    ---------------------------------------------
-    PRIORIDAD DE DECISIÓN (OBLIGATORIA)
-    ---------------------------------------------
-    1) Primero fija el "tipo" intentando acertar el GRUPO:
-       - Usa el texto del descompuesto (descripcion + contexto).
-       - Usa descripcion_grupo de los candidatos como apoyo.
-       La decisión del tipo debe ser coherente con el código elegido.
+    BC3CATv1
+    V=<version>
+    T
+    <tipo_id>=<tipo>
+    ...
+    G
+    <group_id>=<descripcion grupo>
+    ...
+    F
+    <family_id>=<descripcion familia>
+    ...
+    I
+    <codigo>|<tipo_id>|<family_id>|<group_id>|<descripcion>|<alias_csv_opcional>
+    ...
+    END
 
-    2) Después encaja la FAMILIA: descripcion_familia debe alinearse con el contexto.
+    Donde:
+    - tipo_id es una clave corta de tipo (ej. S, M, A, C, L, X)
+    - family_id identifica una familia del catálogo
+    - group_id identifica un grupo del catálogo
+    - descripcion es la descripción específica del producto
+    - alias_csv_opcional son sinónimos o palabras relacionadas separadas por comas
 
-    3) Por último elige el PRODUCTO: entre candidatos de la familia correcta, usa descripcion_producto
-       y descripcion_completa para elegir el más exacto.
+    El catálogo es la fuente única de verdad. codigo_interno DEBE salir de la sección I.
 
-    ---------------------------------------------
-    VALORES PERMITIDOS EN "tipo"
-    ---------------------------------------------
+    ------------------------------------------------
+    BLOQUE lot (lote BC3)
+    ------------------------------------------------
+    Debes clasificar CADA elemento del lote lot[].
+
+    Significado de claves:
+    - i = id del descompuesto
+    - b = codigo_bc3
+    - u = unidad
+    - ca = capitulo
+    - sc = subcapitulo
+    - p = partida
+    - d = descripcion
+
+    ------------------------------------------------
+    REGLAS OBLIGATORIAS
+    ------------------------------------------------
+    - Debes devolver exactamente 1 resultado por cada elemento de lot[].
+    - codigo_interno debe ser exactamente un código presente en la sección I del catálogo.
+    - Nunca devuelvas codigo_interno vacío, null ni inventado.
+    - Usa primero la coherencia de TIPO, luego la FAMILIA, luego la DESCRIPCIÓN y ALIAS.
+    - Interpreta alias como sinónimos o pistas útiles del uso en obra.
+    - Si hay duda, elige el código más probable del catálogo; no lo dejes vacío.
+
+    ------------------------------------------------
+    TIPOS PERMITIDOS EN "tipo"
+    ------------------------------------------------
     Devuelve UNO de:
     - "SUMINISTRO"
     - "MONTAJE"
@@ -203,36 +207,21 @@ bc3_clasificador_es:
     - "MEDIOS_AUXILIARES"
     - "INDETERMINADO"
 
-    Guías rápidas:
-    - Material/aporte/suministro de materiales -> SUMINISTRO
-    - Mano de obra/colocación/instalación/subcontrata -> MONTAJE
-    - “suministro e instalación / suministro y montaje / incluye colocación” -> SUMINISTRO_CON_MONTAJE
-    - “alquiler” de equipo -> MAQUINARIA_ALQUILER
-    - compra/suministro de equipo -> MAQUINARIA_COMPRA
-    - andamios/vallas/casetas/protecciones provisionales -> MEDIOS_AUXILIARES
-    - si no hay evidencia suficiente -> INDETERMINADO
+    Mapeo sugerido desde tipo_id del catálogo:
+    - S -> SUMINISTRO
+    - M -> MONTAJE
+    - A -> SUMINISTRO_CON_MONTAJE
+    - C -> MAQUINARIA_COMPRA
+    - L -> MAQUINARIA_ALQUILER
+    - X -> MEDIOS_AUXILIARES
 
-    ---------------------------------------------
-    REGLA ESTRICTA DE CÓDIGO (CRÍTICA)
-    ---------------------------------------------
-    - codigo_interno DEBE ser exactamente uno de candidatos[].codigo del mismo descompuesto.
-    - Nunca devuelvas null ni "".
-    - Si hay duda: MAYOR score; si falta score/empate: PRIMER candidato.
-
-    ---------------------------------------------
+    ------------------------------------------------
     CONFIANZA
-    ---------------------------------------------
-    - confianza_pct: entero 0 a 100.
-      * 90-100: grupo + familia + producto encajan claramente
-      * 70-89: encaje alto con pequeña duda
-      * 40-69: ambigüedad relevante
-      * 0-39: muy incierto
-
-    ---------------------------------------------
-    SALIDA
-    ---------------------------------------------
-    Devuelve SOLO JSON válido con la clasificación final (no repitas el input).
-    Debes devolver exactamente un resultado por cada descompuesto del input.
+    ------------------------------------------------
+    - confianza_pct 90-100: encaje claro
+    - confianza_pct 70-89: encaje alto
+    - confianza_pct 40-69: ambigüedad relevante
+    - confianza_pct 0-39: muy incierto
 
   schema_hint: >
     Devuelve SOLO JSON válido.
@@ -240,18 +229,17 @@ bc3_clasificador_es:
     {
       "resultados": [
         {
-          "id": "string (igual al id de entrada)",
+          "id": "string (igual al i de entrada)",
           "tipo": "SUMINISTRO|MONTAJE|SUMINISTRO_CON_MONTAJE|MAQUINARIA_COMPRA|MAQUINARIA_ALQUILER|MEDIOS_AUXILIARES|INDETERMINADO",
-          "codigo_interno": "string (OBLIGATORIO, nunca null, nunca vacío)",
+          "codigo_interno": "string (OBLIGATORIO, nunca null, nunca vacío y presente en el catálogo)",
           "confianza_pct": 0-100
         }
       ]
     }
 
     Reglas de validación:
-    - resultados debe contener TODOS los ids de entrada (mismo número de elementos).
+    - resultados debe contener TODOS los ids de lot[].
     - No inventes códigos ni ids.
-    - No incluyas campos extra (NO alternativas, NO observaciones).
-    - codigo_interno debe ser uno de candidatos[].codigo del mismo id.
+    - No incluyas campos extra.
 
   schema: bc3_clasificacion_resultado

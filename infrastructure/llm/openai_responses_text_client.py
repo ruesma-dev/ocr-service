@@ -38,21 +38,30 @@ class OpenAIResponsesTextClient:
         task: str,
         payload: dict[str, Any],
         response_model: Type[BaseModel],
+        prompt_cache_key: str | None = None,
+        prompt_cache_retention: str | None = None,
     ) -> BaseModel:
-        payload_text = json.dumps(payload, ensure_ascii=False, indent=2)
-        user_text = f"{task}\n\nJSON de entrada:\n{payload_text}"
+        payload_text = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=False,
+        )
+        user_text = f"{task}\n\nINPUT_JSON:\n{payload_text}"
 
         logger.info(
-            "OpenAI TEXT call. model=%s schema=%s chars=%s",
+            "OpenAI TEXT call. model=%s schema=%s chars=%s cache_key=%s cache_retention=%s",
             model,
             response_model.__name__,
             len(user_text),
+            bool(prompt_cache_key),
+            prompt_cache_retention,
         )
 
-        response = self._client.responses.parse(
-            model=model,
-            instructions=system,
-            input=[
+        request_kwargs: dict[str, Any] = {
+            "model": model,
+            "instructions": system,
+            "input": [
                 {
                     "role": "user",
                     "content": [
@@ -63,8 +72,24 @@ class OpenAIResponsesTextClient:
                     ],
                 }
             ],
-            text_format=response_model,
-        )
+            "text_format": response_model,
+        }
+
+        if prompt_cache_key:
+            request_kwargs["prompt_cache_key"] = prompt_cache_key
+        if prompt_cache_retention:
+            request_kwargs["prompt_cache_retention"] = prompt_cache_retention
+
+        try:
+            response = self._client.responses.parse(**request_kwargs)
+        except TypeError:
+            logger.warning(
+                "El SDK actual no acepta prompt_cache_key/prompt_cache_retention. "
+                "Se reintenta sin parámetros de cache."
+            )
+            request_kwargs.pop("prompt_cache_key", None)
+            request_kwargs.pop("prompt_cache_retention", None)
+            response = self._client.responses.parse(**request_kwargs)
 
         if response.output_parsed is None:
             raise ValueError("OpenAI no devolvió output_parsed en la respuesta.")

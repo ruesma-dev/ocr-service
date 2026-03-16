@@ -17,7 +17,9 @@ from application.services.schema_registry import SchemaRegistry
 from config.logging_config import configure_logging
 from config.settings import Settings
 from domain.models.bc3_classification_models import Bc3ClassificationRequest
-from infrastructure.catalog.product_catalog_loader import ProductCatalogLoader
+from infrastructure.catalog.compact_catalog_yaml_repository import (
+    CompactCatalogYamlRepository,
+)
 from infrastructure.llm.openai_responses_text_client import OpenAIResponsesTextClient
 from infrastructure.prompts.yaml_prompt_repository import YamlPromptRepository
 
@@ -46,12 +48,6 @@ def _parse_args() -> argparse.Namespace:
         default="output/bc3_test_result.json",
         help="Ruta al JSON de salida",
     )
-    parser.add_argument(
-        "--llm-batch-size",
-        type=int,
-        default=None,
-        help="Tamaño de lote interno para llamadas al LLM",
-    )
     return parser.parse_args()
 
 
@@ -70,23 +66,10 @@ def main() -> int:
     payload = _read_json(request_path)
     req = Bc3ClassificationRequest.model_validate(payload)
 
-    effective_batch_size = int(args.llm_batch_size or req.llm_batch_size or settings.bc3_llm_batch_size)
-    req = req.model_copy(update={"llm_batch_size": effective_batch_size})
-
-    catalog_loader = ProductCatalogLoader()
-    catalogo = catalog_loader.load_from_request(req)
-    logger.info(
-        "Catálogo cargado: filas=%s primeros_codigos=%s llm_batch_size=%s",
-        len(catalogo),
-        [item.codigo for item in catalogo[:5]],
-        req.llm_batch_size,
-    )
-
-    req = req.model_copy(update={"catalogo": catalogo})
-
     prompt_repo = YamlPromptRepository(settings.prompts_yaml_path)
     schema_registry = SchemaRegistry()
     llm_text = OpenAIResponsesTextClient(api_key=settings.openai_api_key)
+    catalog_repo = CompactCatalogYamlRepository(settings.bc3_catalog_yaml_path)
 
     extractor_text = PromptedTextExtractionService(
         llm_client=llm_text,
@@ -98,7 +81,10 @@ def main() -> int:
     pipeline = Bc3ClassificationPipeline(
         extractor=extractor_text,
         selector=CatalogCandidateSelector(),
-        catalog_loader=catalog_loader,
+        catalog_repository=catalog_repo,
+        prompt_cache_enabled=settings.bc3_use_prompt_cache,
+        prompt_cache_key_prefix=settings.bc3_prompt_cache_key_prefix,
+        prompt_cache_retention=settings.bc3_prompt_cache_retention,
     )
 
     try:
@@ -116,8 +102,8 @@ def main() -> int:
             "model": settings.openai_model,
             "processed_at_utc": _utc_iso(),
             "context": {
+                "catalog_yaml_path": settings.bc3_catalog_yaml_path,
                 "llm_batch_size": req.llm_batch_size,
-                "descompuestos_count": len(req.descompuestos),
             },
         },
         "data": result.model_dump(),

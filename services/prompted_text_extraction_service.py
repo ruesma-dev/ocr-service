@@ -140,7 +140,26 @@ class PromptedTextExtractionService:
         result: Bc3ClasificacionResultado,
     ) -> Bc3ClasificacionResultado:
         input_items = list(self._iter_input_items(payload))
+        expected_ids = [self._item_id(item) for item in input_items]
         result_by_id = {item.id: item for item in result.resultados}
+
+        returned_ids = set(result_by_id.keys())
+        expected_id_set = {item_id for item_id in expected_ids if item_id}
+        missing_ids = [item_id for item_id in expected_ids if item_id and item_id not in returned_ids]
+        unknown_ids = sorted(list(returned_ids - expected_id_set))
+
+        if missing_ids:
+            logger.warning(
+                "BC3 normalize: faltan ids en respuesta del LLM. missing_ids=%s returned_count=%s expected_count=%s",
+                missing_ids,
+                len(returned_ids),
+                len(expected_id_set),
+            )
+        if unknown_ids:
+            logger.warning(
+                "BC3 normalize: el LLM devolvió ids no esperados. unknown_ids=%s",
+                unknown_ids,
+            )
 
         fixed_items: list[Bc3ClasificacionItem] = []
         for input_item in input_items:
@@ -179,14 +198,14 @@ class PromptedTextExtractionService:
         payload: Dict[str, Any],
         result: Bc3ClasificacionResultado,
     ) -> Bc3ClasificacionResultado:
-        input_items = list(self._iter_input_items(payload))
+        input_items = payload.get("descompuestos") or []
         result_by_id = {item.id: item for item in result.resultados}
 
         fixed_items: list[Bc3ClasificacionItem] = []
         fallback_count = 0
 
         for input_item in input_items:
-            item_id = self._item_id(input_item)
+            item_id = str(input_item.get("id") or "").strip()
             candidates = input_item.get("candidatos") or []
 
             allowed_codes = [
