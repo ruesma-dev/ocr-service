@@ -1,11 +1,12 @@
+# pyproject.toml
 [build-system]
 requires = ["setuptools>=69.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "ruesma-ocr-service"
-version = "0.1.0"
-description = "Librería local (fase 1) para clasificador BC3 y OCR"
+version = "0.3.0"
+description = "Librería BC3 para clasificación IA con catálogo YAML interno"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -14,15 +15,18 @@ dependencies = [
   "pydantic-settings>=2.0.0",
   "httpx>=0.24.0",
   "PyYAML>=6.0.0",
-  "openpyxl>=3.1.0"
+  "python-dotenv>=1.0.0"
 ]
+
+[project.scripts]
+ruesma-bc3-classify-stdin = "ruesma_ocr_service.cli.bc3_classify_stdin:main"
+
+[tool.setuptools]
+include-package-data = true
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = [
-  "ruesma_ocr_service*",
-  "application*",
-  "config*",
-  "domain*",
-  "infrastructure*"
-]
+include = ["ruesma_ocr_service*"]
+
+[tool.setuptools.package-data]
+"ruesma_ocr_service.resources" = ["*.yaml"]

@@ -1,0 +1,2 @@
+# MANIFEST.in
+recursive-include ruesma_ocr_service/resources *.yaml
