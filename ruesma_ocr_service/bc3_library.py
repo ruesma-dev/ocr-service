@@ -4,7 +4,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
@@ -52,43 +51,14 @@ def _sha256_json(data: Dict[str, Any]) -> str:
     return hashlib.sha256(raw).hexdigest()
 
 
-@dataclass(frozen=True)
-class Bc3ClassifierLibraryConfig:
-    """
-    Config ligera para consumo desde el servicio 1.
-
-    No obliga al servicio 1 a conocer la clase Settings completa del
-    servicio 2. Permite override de los parámetros que sí necesita.
-    """
-    model_name: str = "gpt-5.2"
-    llm_batch_size: int = 5
-    top_k_candidates: int = 20
-
-
 class Bc3ClassifierLibrary:
     """
     Fachada pública de la librería BC3.
-
-    - Mantiene el catálogo y los prompts como recursos internos del paquete.
-    - Expone una única operación: classify(payload).
-    - Devuelve el mismo envelope JSON que devolvía el CLI.
     """
 
-    def __init__(
-        self,
-        config: Bc3ClassifierLibraryConfig | None = None,
-        settings: Settings | None = None,
-    ) -> None:
-        effective_settings = self._build_effective_settings(
-            config=config,
-            settings=settings,
-        )
-        self._settings = effective_settings
-
-        configure_logging(
-            Path(self._settings.log_dir),
-            self._settings.log_level,
-        )
+    def __init__(self, settings: Settings | None = None) -> None:
+        self._settings = settings or Settings()
+        configure_logging(Path(self._settings.log_dir), self._settings.log_level)
 
         prompt_repo = YamlPromptRepository(self._settings.prompts_yaml_path)
         schema_registry = SchemaRegistry()
@@ -116,7 +86,10 @@ class Bc3ClassifierLibrary:
         )
 
         logger.info(
-            "Bc3ClassifierLibrary inicializada. model=%s catalog_yaml=%s prompts_yaml=%s batch_size=%s top_k=%s",
+            (
+                "Bc3ClassifierLibrary inicializada. model=%s catalog_yaml=%s "
+                "prompts_yaml=%s batch_size=%s top_k=%s"
+            ),
             self._settings.openai_model,
             self._settings.bc3_catalog_yaml_path,
             self._settings.prompts_yaml_path,
@@ -124,35 +97,35 @@ class Bc3ClassifierLibrary:
             self._settings.bc3_default_top_k,
         )
 
-    @staticmethod
-    def _build_effective_settings(
-        *,
-        config: Bc3ClassifierLibraryConfig | None,
-        settings: Settings | None,
-    ) -> Settings:
-        if settings is None:
-            settings = Settings()
-
-        if config is None:
-            return settings
-
-        return settings.model_copy(
-            update={
-                "openai_model": config.model_name,
-                "bc3_llm_batch_size": max(1, int(config.llm_batch_size)),
-                "bc3_default_top_k": max(1, int(config.top_k_candidates)),
-            }
-        )
-
     @classmethod
     def from_env(cls) -> "Bc3ClassifierLibrary":
         dotenv_path = load_runtime_dotenv()
+
+        try:
+            settings = Settings()
+        except Exception as exc:
+            detail = (
+                "No se pudo cargar la configuración de IA. "
+                "Falta OPENAI_API_KEY.\n\n"
+                "Crea un archivo '.env' en la misma carpeta del ejecutable con:\n"
+                "OPENAI_API_KEY=tu_clave\n"
+                "OPENAI_MODEL=gpt-5.2\n"
+            )
+            if dotenv_path:
+                detail += f"\nSe ha leído el .env desde: {dotenv_path}"
+            else:
+                detail += (
+                    "\nNo se encontró ningún .env válido junto al ejecutable."
+                )
+            raise RuntimeError(detail) from exc
+
         if dotenv_path:
             logging.getLogger(__name__).info(
                 ".env cargado para Bc3ClassifierLibrary: %s",
                 dotenv_path,
             )
-        return cls(settings=Settings())
+
+        return cls(settings)
 
     def classify(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         req = Bc3ClassificationRequest.model_validate(payload)
@@ -172,7 +145,10 @@ class Bc3ClassifierLibrary:
         )
 
         logger.info(
-            "BC3 classify librería. prompt_key=%s model=%s bc3_id=%s descompuestos=%s llm_batch_size=%s top_k=%s",
+            (
+                "BC3 classify librería. prompt_key=%s model=%s bc3_id=%s "
+                "descompuestos=%s llm_batch_size=%s top_k=%s"
+            ),
             req.prompt_key,
             self._settings.openai_model,
             req.bc3_id,
